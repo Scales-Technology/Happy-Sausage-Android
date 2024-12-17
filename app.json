@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "FCS App",
-    "slug": "bt_test",
+    "name": "WMS App",
+    "slug": "WMS_bt_test",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "myapp",
@@ -37,10 +37,8 @@
     "extra": {
       "router": {
         "origin": false
-      },
-      "eas": {
-        "projectId": "c2d6c482-48e0-4504-8eb6-3202d159257c"
       }
-    }
+    },
+    "owner": "valentinejerry"
   }
 }
