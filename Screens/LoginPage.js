@@ -100,7 +100,7 @@ const LoginPage = ({route, navigation}) => {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Farm Scale</Text>
+      <Text style={styles.title}>Animal Weight Tracking App</Text>
       {error ? <Text style={styles.errorText}>{error}</Text> : null}
       <TextInput
         style={styles.input}
