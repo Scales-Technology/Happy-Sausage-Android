@@ -8,379 +8,416 @@ import {
   TouchableOpacity,
   ScrollView,
   ToastAndroid,
-  TextInput,
 } from "react-native";
-import DropdownComponent from "../Components/DropDown"; // Custom dropdown component
-import Header from "../Components/Header"; // Custom header component
-import { useNavigation } from "@react-navigation/native"; // Navigation hook for navigating between screens
-import { store } from "../store/store"; // Redux store
-import { setCollectionRecords, setLocations, setProducts } from "../store"; // Redux actions
-import { useDispatch } from "react-redux"; // Redux hook for dispatching actions
-import { collection, getDocs } from "firebase/firestore"; // Firestore methods for database operations
-import { db } from "../Database/config"; // Firestore database configuration
-import { useBluetooth } from "rn-bluetooth-classic"; // Custom Bluetooth hook
-import RNBluetooth from "react-native-bluetooth-classic"; // Bluetooth library
+import DropdownComponent from "../Components/DropDown";
+import Header from "../Components/Header";
+import { useNavigation } from "@react-navigation/native";
+import { store } from "../store/store";
+import { setCollectionRecords, setLocations, setProducts } from "../store";
+import { useDispatch } from "react-redux";
+import { collection, getDocs, query, orderBy } from "firebase/firestore";
+import { db } from "../Database/config";
+import { useBluetooth } from "rn-bluetooth-classic";
+import RNBluetooth from "react-native-bluetooth-classic";
 
-// Getting the width of the device's screen
 const screenWidth = Dimensions.get("window").width;
 
-// Defining the HomePage component
 const HomePage = () => {
-  const dispatch = useDispatch(); // Getting the dispatch function from Redux
-  const navigation = useNavigation(); // Getting the navigation function from React Navigation
-  const [refreshing, setRefreshing] = useState(false); // State to handle pull-to-refresh functionality
-  const [selectedLocation, setSelectedLocation] = useState(null); // State to manage selected location from dropdown
-  const [productsData, setProductsData] = useState([]); // State to store products data
-  const [locationsData, setLocationsData] = useState([]); // State to store locations data
-  const [fieldCollectionData, setFieldCollectionData] = useState([]); // State to store field collection data
-  const { connectToDevice } = useBluetooth(); // Destructuring Bluetooth connect function
-  const [animalTypesData, setAnimalTypesData] = useState([]); // State to store animal types data
-  const [selectedAnimalType, setSelectedAnimalType] = useState(null); // Default animal type
-  const [tagId, setTagId] = useState(""); // State for manually entered tag ID/name combination
-  const [ageMonths, setAgeMonths] = useState(""); // State for manually entered age in months
+  const dispatch = useDispatch();
+  const navigation = useNavigation();
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedClient, setSelectedClient] = useState(null);
+  const [selectedDestination, setSelectedDestination] = useState(null);
+  const [batchCode, setBatchCode] = useState("");
+  const [productsData, setProductsData] = useState([]);
+  const [locationsData, setLocationsData] = useState([]);
+  const [clientsData, setClientsData] = useState([]);
+  const [fieldCollectionData, setFieldCollectionData] = useState([]);
+  const { connectToDevice } = useBluetooth();
+  const [carcasTypesData, setCarcasTypesData] = useState([]);
+  const [selectedCarcasType, setSelectedCarcasType] = useState(null);
 
-  // Fetching the BusinessId from the Redux store
   const BusinessId = store.getState().settings.BusinessId;
 
-  // Function to fetch products from Firestore database
+  // Generate batch code
+  const generateBatchCode = async () => {
+    try {
+      const col = collection(db, `Businesses/${BusinessId}/FieldCollections`);
+      const q = query(col, orderBy("batchCode", "desc"));
+      const snap = await getDocs(q);
+
+      let maxNumber = 0;
+
+      snap.forEach((doc) => {
+        const data = doc.data();
+        if (data.batchCode) {
+          const parts = data.batchCode.split("-");
+          if (parts.length === 3) {
+            const numPart = parts[2];
+            const num = parseInt(numPart);
+            if (!isNaN(num) && num > maxNumber) {
+              maxNumber = num;
+            }
+          }
+        }
+      });
+
+      const today = new Date();
+      const dateStr = today.toISOString().slice(0, 10).replace(/-/g, "");
+      const nextNumber = maxNumber + 1;
+      const newCode = `BATCH-${dateStr}-${String(nextNumber).padStart(3, "0")}`;
+
+      setBatchCode(newCode);
+      console.log("Generated batch code:", newCode);
+      return newCode;
+    } catch (e) {
+      console.error("Error generating batch code:", e);
+      const today = new Date();
+      const dateStr = today.toISOString().slice(0, 10).replace(/-/g, "");
+      const newCode = `BATCH-${dateStr}-001`;
+      setBatchCode(newCode);
+      return newCode;
+    }
+  };
+
+  // Generate new batch code when button is pressed
+  const generateNewBatchCode = async () => {
+    await generateBatchCode();
+    ToastAndroid.show("New batch code generated", ToastAndroid.SHORT);
+  };
+
+  // Fetch clients from Clients collection
+  const getClients = useCallback(async () => {
+    try {
+      const snapshot = await getDocs(
+        collection(db, `Businesses/${BusinessId}/Clients`)
+      );
+      const clients = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      // Create dropdown options from clients
+      const clientOptions = clients.map((client) => ({
+        label: `${client.fName || ""} ${client.lName || ""}`.trim(),
+        value: client.id,
+        clientData: client, // Store full data for later use
+      }));
+
+      setClientsData(clientOptions);
+      console.log("Fetched clients:", clientOptions.length);
+      return clientOptions;
+    } catch (error) {
+      console.log("Error fetching clients:", error);
+      ToastAndroid.show("Error fetching clients", ToastAndroid.SHORT);
+      return [];
+    }
+  }, [BusinessId]);
+
+  // Fetch locations for destinations
+  const getLocations = useCallback(async () => {
+    try {
+      const snapshot = await getDocs(
+        collection(db, `Businesses/${BusinessId}/Locations`)
+      );
+      const locations = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+
+      dispatch(setLocations(locations));
+      setLocationsData(
+        locations.map((loc) => ({ label: loc.name, value: loc.id }))
+      );
+      console.log("Fetched locations:", locations.length);
+    } catch (error) {
+      ToastAndroid.show("Error fetching locations", ToastAndroid.SHORT);
+    }
+  }, [BusinessId, dispatch]);
+
   const getProducts = useCallback(async () => {
     try {
       const productsCollection = collection(
         db,
         `Businesses/${BusinessId}/Products`
-      ); // Defining the collection path in Firestore
-      const productsSnapshot = await getDocs(productsCollection); // Fetching the documents from the collection
-      const products = productsSnapshot.docs.map((doc) => ({
+      );
+      const snapshot = await getDocs(productsCollection);
+      const products = snapshot.docs.map((doc) => ({
         id: doc.id,
         ...doc.data(),
-      })); // Mapping the documents to an array of product objects
+      }));
 
-      // Getting stored products from Redux store
-      const storedProducts = store.getState().settings.products;
-      let mergedProducts;
+      const stored = store.getState().settings.products || [];
+      const merged = [
+        ...stored,
+        ...products.filter((p) => !stored.some((sp) => sp.id === p.id)),
+      ];
 
-      // Merging the fetched products with stored products to avoid duplication
-      if (Array.isArray(storedProducts)) {
-        const newProducts = products.filter(
-          (product) => !storedProducts.some((p) => p.id === product.id)
-        );
-        mergedProducts = [...storedProducts, ...newProducts];
-      } else {
-        mergedProducts = products;
-      }
+      dispatch(setProducts(merged));
 
-      dispatch(setProducts(mergedProducts)); // Dispatching the merged products to Redux store
-
-      // Setting the products data for the dropdown component
       setProductsData(
-        mergedProducts.map((product) => ({
-          isDukawala: product.isDukawala,
-          price: product.price,
-          label: product.name,
-          value: product.id,
+        merged.map((p) => ({
+          isDukawala: p.isDukawala,
+          price: p.price,
+          label: p.name,
+          value: p.id,
         }))
       );
     } catch (error) {
-      console.error("Error fetching products:", error); // Logging error if fetching products fails
-      ToastAndroid.show("Error fetching products", ToastAndroid.SHORT); // Showing a toast message on error
+      ToastAndroid.show("Error fetching products", ToastAndroid.SHORT);
     }
-  }, [BusinessId, dispatch]); // Dependency array for the useCallback hook
-
-  // Function to fetch locations from Firestore database
-  const getLocations = useCallback(async () => {
-    try {
-      const locationsCollection = collection(
-        db,
-        `Businesses/${BusinessId}/Locations`
-      ); // Defining the collection path in Firestore
-      const locationsSnapshot = await getDocs(locationsCollection); // Fetching the documents from the collection
-      const locations = locationsSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })); // Mapping the documents to an array of location objects
-
-      // Use only freshly fetched locations for the current account
-      dispatch(setLocations(locations)); // Dispatching the fetched locations to Redux store
-
-      // Setting the locations data for the dropdown component
-      setLocationsData(
-        locations.map((location) => ({
-          label: location.name,
-          value: location.id,
-        }))
-      );
-    } catch (error) {
-      console.error("Error fetching locations:", error); // Logging error if fetching locations fails
-      ToastAndroid.show("Error fetching locations", ToastAndroid.SHORT); // Showing a toast message on error
-    }
-  }, [BusinessId, dispatch]); // Dependency array for the useCallback hook
+  }, [BusinessId, dispatch]);
 
   const getFieldCollections = useCallback(async () => {
     try {
-      const fieldCollectionCollection = collection(
-        db,
-        `Businesses/${BusinessId}/FieldCollections`
-      ); // Defining the collection path in Firestore
-      const fieldCollectionSnapshot = await getDocs(fieldCollectionCollection); // Fetching the documents from the collection
-      const fieldCollections = fieldCollectionSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })); // Mapping the documents to an array of field collection objects
+      const snapshot = await getDocs(
+        collection(db, `Businesses/${BusinessId}/FieldCollections`)
+      );
+      const all = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
       const clerkId = store.getState().settings.user.clerkId;
-      // Setting the field collection data for the dropdown component
-      setFieldCollectionData(
-        fieldCollections.filter(
-          (fieldCollection) => fieldCollection.clerk.id === clerkId
-        )
-      );
+      const myRecords = all.filter((r) => r.clerk?.id === clerkId);
+      setFieldCollectionData(myRecords);
 
-      const dailyRecords = fieldCollectionData.filter((fieldCollection) => {
-        const today = new Date();
-        const recordDate = new Date(fieldCollection.timestamp);
-        return (
-          recordDate.getFullYear() === today.getFullYear() &&
-          recordDate.getMonth() === today.getMonth() &&
-          recordDate.getDate() === today.getDate()
-        );
-      });
+      const today = new Date();
+      const daily = myRecords.filter((r) => {
+        const d = new Date(r.timestamp);
+        return d.toDateString() === today.toDateString();
+      }).length;
 
-      const weeklyRecords = fieldCollectionData.filter((fieldCollection) => {
-        const today = new Date();
-        const firstDayOfWeek = today.getDate() - today.getDay();
-        const weekStart = new Date(today.setDate(firstDayOfWeek));
-        weekStart.setHours(0, 0, 0, 0);
+      const weekStart = new Date(today);
+      weekStart.setDate(today.getDate() - today.getDay());
+      const weekly = myRecords.filter(
+        (r) => new Date(r.timestamp) >= weekStart
+      ).length;
 
-        const recordDate = new Date(fieldCollection.timestamp);
-        return recordDate >= weekStart;
-      });
+      const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const monthly = myRecords.filter(
+        (r) => new Date(r.timestamp) >= monthStart
+      ).length;
 
-      const monthlyRecords = fieldCollectionData.filter((fieldCollection) => {
-        const today = new Date();
-        const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
-        monthStart.setHours(0, 0, 0, 0);
-
-        const recordDate = new Date(fieldCollection.timestamp);
-        return recordDate >= monthStart;
-      });
-      const initialCollectionRecords =
-        store.getState().settings.collectionRecords;
-      const collectionRecords = {
-        daily: dailyRecords.length,
-        weekly: weeklyRecords.length,
-        monthly: monthlyRecords.length,
-      };
-      dispatch(setCollectionRecords(collectionRecords));
+      dispatch(setCollectionRecords({ daily, weekly, monthly }));
     } catch (error) {
-      ToastAndroid.show("Error fetching field collections", ToastAndroid.SHORT); // Showing a toast message on error
+      ToastAndroid.show("Error fetching collections", ToastAndroid.SHORT);
     }
-  });
+  }, [BusinessId, dispatch]);
 
-  // Function to fetch animal types from Firestore database
-  const getAnimalTypes = useCallback(async () => {
+  const getCarcasTypes = useCallback(async () => {
     try {
-      const productsCollection = collection(
-        db,
-        `Businesses/${BusinessId}/Products`
-      ); // Defining the collection path in Firestore
-      const productsSnapshot = await getDocs(productsCollection); // Fetching the documents from the collection
-      const products = productsSnapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      })); // Mapping the documents to an array of product objects
-
-      // Setting the animal types data for the dropdown component
-      const animalTypes = products.map((product) => ({
-        label: product.name,
-        value: product.id,
+      const snapshot = await getDocs(
+        collection(db, `Businesses/${BusinessId}/Products`)
+      );
+      const types = snapshot.docs.map((doc) => ({
+        label: doc.data().name,
+        value: doc.id,
       }));
-      setAnimalTypesData(animalTypes);
-
-      // Set the first animal type as the default selected value if available
-      if (animalTypes.length > 0) {
-        setSelectedAnimalType(animalTypes[0]);
-      }
+      setCarcasTypesData(types);
+      if (types.length > 0) setSelectedCarcasType(types[0]);
     } catch (error) {
-      console.error("Error fetching animal types:", error); // Logging error if fetching animal types fails
-      ToastAndroid.show("Error fetching animal types", ToastAndroid.SHORT); // Showing a toast message on error
+      ToastAndroid.show("Error fetching carcas types", ToastAndroid.SHORT);
     }
-  }, [BusinessId]); // Dependency array for the useCallback hook
+  }, [BusinessId]);
 
-  // useEffect hook to fetch data and connect to Bluetooth devices on component mount
+  // Load data
   useEffect(() => {
-    const fetchData = async () => {
-      await getProducts(); // Fetching products data
-      await getLocations(); // Fetching locations data
-      await getFieldCollections(); // Fetching field collections data
-      await getAnimalTypes(); // Fetching animal types data
+    const load = async () => {
+      await Promise.all([
+        getProducts(),
+        getLocations(),
+        getClients(),
+        getFieldCollections(),
+        getCarcasTypes(),
+      ]);
+      await generateBatchCode();
     };
+    load();
 
-    // Getting the scale and printer addresses from the Redux store
     const scale = store.getState().settings.scaleAddress;
     const printer = store.getState().settings.printerAddress;
-
-    // Connecting to Bluetooth devices if addresses are available
     scale && RNBluetooth.connectToDevice(scale);
     printer && RNBluetooth.connectToDevice(printer);
+  }, []);
 
-    fetchData(); // Fetching data
-  }, [getProducts, getLocations, getAnimalTypes]); // Updated dependency array for the useEffect hook
-
-  // Function to handle pull-to-refresh functionality
   const onRefresh = useCallback(() => {
-    setRefreshing(true); // Setting the refreshing state to true
+    setRefreshing(true);
     Promise.all([
       getProducts(),
       getLocations(),
+      getClients(),
       getFieldCollections(),
-      getAnimalTypes(),
-    ]).finally(() => {
-      setRefreshing(false); // Setting the refreshing state to false after fetching data
-    });
-  }, [getProducts, getLocations, getAnimalTypes]); // Updated dependency array for the useCallback hook
+      getCarcasTypes(),
+      generateBatchCode(),
+    ]).finally(() => setRefreshing(false));
+  }, [getProducts, getLocations, getCarcasTypes, getClients]);
 
-  // Function to handle navigation to the RecordPage screen
   const handleNavigate = () => {
-    if (!selectedLocation) {
-      ToastAndroid.show("Please select a location", ToastAndroid.SHORT); // Showing a toast message if no location is selected
+    console.log("=== HOMEPAGE NAVIGATION DEBUG ===");
+    console.log("Selected Client:", selectedClient);
+    console.log("Selected Destination:", selectedDestination);
+    console.log("Selected Carcas Type:", selectedCarcasType);
+    console.log("Batch Code:", batchCode);
+    console.log("=== END DEBUG ===");
+
+    if (!selectedClient) {
+      ToastAndroid.show("Please select a client", ToastAndroid.SHORT);
+      return;
+    }
+    if (!selectedDestination) {
+      ToastAndroid.show("Please select a destination", ToastAndroid.SHORT);
       return;
     }
 
-    // Parse the tagId to separate animal name and tag ID
-    let animalName = selectedAnimalType?.label || "";
-    let parsedTagId = tagId;
-    if (tagId.includes("/")) {
-      const parts = tagId.split("/");
-      if (parts.length === 2) {
-        animalName = parts[0].trim();
-        parsedTagId = parts[1].trim();
-      }
-    }
+    // Get client data from the selected client object
+    const clientId = selectedClient?.value || "";
+    const clientFullName = selectedClient?.label || "";
+    const clientData = selectedClient?.clientData || {};
 
-    // Navigating to the RecordPage screen with selected data
-    navigation.navigate("RecordPage", {
-      location: selectedLocation,
-      animalType: selectedAnimalType,
-      tagId: parsedTagId,
-      ageMonths: parseInt(ageMonths, 10),
-      animalName: animalName, // Pass the parsed or default animal name
+    // IMPORTANT: Create the supplier object structure that will be saved to Firestore
+    const supplier = {
+      id: clientId,
+      name: clientFullName,
+      fName: clientData.fName || "",
+      lName: clientData.lName || "",
+      phoneNumber: clientData.phoneNumber || "",
+      location: clientData.location || "",
+      // Include any other client fields you need
+    };
+
+    const destinationId = selectedDestination?.value || "";
+    const destinationName = selectedDestination?.label || "";
+    const carcasTypeId = selectedCarcasType?.value || "";
+    const carcasTypeName = selectedCarcasType?.label || "";
+
+    console.log("Extracted Data for Navigation:", {
+      supplier, // This is the key part - sending supplier object
+      supplierId: clientId,
+      supplierName: clientFullName,
+      destinationId,
+      destinationName,
+      batchCode,
+      carcasTypeId,
+      carcasTypeName,
+      clientPhone: clientData.phoneNumber || "",
+      clientLocation: clientData.location || "",
     });
-  };
 
-  const handleScaleBt = async () => {
-    const scale = store.getState().settings.scaleAddress;
-    connectToDevice(scale);
-    console.log("Scale: ", scale);
+    // Create navigation parameters
+    const navParams = {
+      supplier: supplier, // Pass the supplier object directly
+      supplierId: clientId,
+      supplierName: clientFullName,
+      clientId: clientId, // Keep for backward compatibility
+      clientName: clientFullName, // Keep for backward compatibility
+      clientFirstName: clientData.fName || "",
+      clientLastName: clientData.lName || "",
+      clientPhone: clientData.phoneNumber || "",
+      clientLocation: clientData.location || "",
+      destinationId: destinationId,
+      destinationName: destinationName,
+      batchCode: batchCode,
+      carcasTypeId: carcasTypeId,
+      carcasTypeName: carcasTypeName,
+      tagId: "",
+      ageMonths: 0,
+    };
+
+    // Generate a new batch code for next time
+    setTimeout(() => {
+      generateBatchCode();
+    }, 100);
+
+    navigation.navigate("RecordPage", navParams);
   };
 
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: "#F9F9F9" }}
       refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} /> // Adding pull-to-refresh control
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }
     >
       <View style={styles.container}>
         <Header refresh={refreshing} handleClick={onRefresh} />
-        <View style={styles.recordSection}>
-          {/*<Text style={styles.heading}>Total Records</Text>
-           <Text style={styles.normalText}>
-            Today:{" "}
-            {store.getState().settings.collectionRecords
-              ? store.getState().settings.collectionRecords.daily
-              : 0}
-          </Text>
-          <Text style={styles.normalText}>
-            This Week:{" "}
-            {store.getState().settings.collectionRecords
-              ? store.getState().settings.collectionRecords.weekly
-              : 0}
-          </Text>
-          <Text style={styles.normalText}>
-            This Month:{" "}
-            {store.getState().settings.collectionRecords
-              ? store.getState().settings.collectionRecords.monthly
-              : 0}
-          </Text> */}
-        </View>
-        <View style={{ marginTop: 30, gap: 5, flex: 1 }}>
+
+        <View style={{ marginTop: 30, gap: 15 }}>
+          {/* 1. BATCH CODE */}
+          <View style={styles.input}>
+            <Text
+              style={{
+                fontFamily: "Poppins-Medium",
+                fontSize: 16,
+                color: "#333",
+              }}
+            >
+              Batch Code:{" "}
+              <Text
+                style={{ color: "#0066CC", fontFamily: "Poppins-SemiBold" }}
+              >
+                {batchCode || "Generating..."}
+              </Text>
+            </Text>
+            <TouchableOpacity
+              onPress={generateNewBatchCode}
+              style={{ position: "absolute", right: 15 }}
+            >
+              <Text style={{ color: "#0066CC", fontSize: 12 }}>Refresh</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* 2. CLIENT - Fetches from Clients collection */}
           <DropdownComponent
-            title={"Location"}
-            onChange={(value) => {
-              console.log(value.label);
-              setSelectedLocation(value); // Setting the selected location state
-            }}
-            data={locationsData} // Providing locations data to the dropdown component
+            title="Client"
+            onChange={setSelectedClient}
+            data={clientsData}
+            placeholder="Select Client"
           />
+
+          {/* 3. DESTINATION - Fetches from Locations collection */}
           <DropdownComponent
-            title={"Type of Animal"}
-            onChange={(value) => {
-              setSelectedAnimalType(value); // Setting the selected animal type state
-            }}
-            data={animalTypesData} // Providing animal types data to the dropdown component
-            value={selectedAnimalType} // Set default value
+            title="Destination"
+            onChange={setSelectedDestination}
+            data={locationsData}
+            placeholder="Select Destination"
           />
-          <TextInput
-            style={styles.input}
-            placeholder="Animal Name/Tag ID (e.g., Cow/Tag123)"
-            value={tagId}
-            onChangeText={setTagId}
-          />
-          <TextInput
-            style={styles.input}
-            placeholder="Animal Age (months)"
-            value={ageMonths}
-            onChangeText={setAgeMonths}
-            keyboardType="numeric"
+
+          {/* 4. CARCAS TYPE */}
+          <DropdownComponent
+            title="Carcas Type"
+            onChange={setSelectedCarcasType}
+            data={carcasTypesData}
+            value={selectedCarcasType}
+            placeholder="Select Carcas Type"
           />
         </View>
+
         <TouchableOpacity
           onPress={handleNavigate}
           style={[styles.button, styles.button_Bg, { marginTop: 30 }]}
         >
           <Text style={styles.buttonText}>Start</Text>
         </TouchableOpacity>
-        <TouchableOpacity
-          onPress={handleScaleBt}
-          style={[styles.button, styles.button_Bg, { marginTop: 30 }]}
-        >
-          <Text style={styles.buttonText}>Connect to Scale</Text>
-        </TouchableOpacity>
       </View>
     </ScrollView>
   );
 };
 
-// Defining the styles for the components
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    display: "flex",
-    backgroundColor: "#F9F9F9",
-    paddingVertical: 10,
     paddingTop: 50,
     alignItems: "center",
+    backgroundColor: "#F9F9F9",
   },
-  heading: {
-    fontSize: 20,
-    fontFamily: "Poppins-Regular",
-  },
-  normalText: {
-    fontSize: 16,
-    fontFamily: "Poppins-Regular",
-  },
-  buttonText: {
-    fontSize: 16,
-    fontFamily: "Poppins-Medium",
-  },
-  recordSection: {
-    display: "flex",
-    paddingVertical: 10,
-    paddingHorizontal: 10,
-    borderRadius: 10,
+  input: {
+    height: 50,
+    borderRadius: 30,
+    paddingHorizontal: 20,
     backgroundColor: "#F2F2F2",
     width: screenWidth * 0.9,
-    marginTop: 20,
+    justifyContent: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
   button: {
     height: 50,
@@ -389,22 +426,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: screenWidth * 0.9,
   },
-  button_Bg: {
-    backgroundColor: "#F2F2F2",
-  },
-  input: {
-    height: 50,
-    borderRadius: 30,
-    paddingHorizontal: 20,
-    backgroundColor: "#F2F2F2",
-    width: screenWidth * 0.9,
-    fontFamily: "Poppins-Regular",
-    fontSize: 16,
-    marginTop: 20,
-  },
+  button_Bg: { backgroundColor: "#F2F2F2" },
+  buttonText: { fontSize: 16, fontFamily: "Poppins-Medium" },
 });
 
-export default HomePage; // Exporting the HomePage component as the default export
+export default HomePage;
 
 // Importing necessary modules and components from React, React Native, and other libraries
 /*import React, { useEffect, useState, useCallback } from "react";
