@@ -9,7 +9,8 @@ import {
   Modal,
   ActivityIndicator,
   ToastAndroid,
-  Alert,
+  SafeAreaView,
+  Platform,
 } from "react-native";
 import React, {
   useState,
@@ -33,19 +34,25 @@ import { useSelector } from "react-redux";
 import { setCollections } from "../store";
 import { useBluetooth } from "rn-bluetooth-classic";
 
-const { width: screenWidth } = Dimensions.get("window");
+const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
 
-// Fixed cell size
-const CELL_SIZE = 50;
+// Responsive sizing functions
+const responsiveSize = (size) => {
+  const standardWidth = 375;
+  return (screenWidth * size) / standardWidth;
+};
+
+// Fixed cell size - consistent for all boxes
+const CELL_SIZE = 50; // Fixed size for all boxes
 
 // Calculate how many columns fit on screen + extra to fill space
-const MIN_COLUMNS = 6; // At least 6 pairs (pcs + weight)
+const MIN_COLUMNS = 6;
 const COLUMNS_PER_SCREEN = Math.floor(screenWidth / CELL_SIZE);
 const TOTAL_PAIRS = Math.max(
   MIN_COLUMNS,
-  Math.ceil(COLUMNS_PER_SCREEN / 2) + 2
-); // Extra columns
-const TOTAL_COLUMNS = TOTAL_PAIRS * 2; // pcs + weight
+  Math.ceil(COLUMNS_PER_SCREEN / 2) + 2,
+);
+const TOTAL_COLUMNS = TOTAL_PAIRS * 2;
 
 const RecordPage = ({ route, navigation }) => {
   // FIXED: Extract all parameters properly
@@ -75,7 +82,7 @@ const RecordPage = ({ route, navigation }) => {
   const ageMonths = params.ageMonths || 0;
 
   console.log("Extracted Data:", {
-    supplier, // This is the key - we have supplier object now
+    supplier,
     clientName,
     destinationName,
     batchCode,
@@ -88,7 +95,7 @@ const RecordPage = ({ route, navigation }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [carcusPieces, setCarcusPieces] = useState(
-    Array.from({ length: TOTAL_COLUMNS * 20 }, () => ({ pcs: 0, weight: 0 }))
+    Array.from({ length: TOTAL_COLUMNS * 20 }, () => ({ pcs: 0, weight: 0 })),
   );
   const [previousRecords, setPreviousRecords] = useState([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -166,7 +173,7 @@ const RecordPage = ({ route, navigation }) => {
 
           ToastAndroid.show(
             `✓ Added 1 piece (${currentWeight.toFixed(1)}kg)`,
-            ToastAndroid.SHORT
+            ToastAndroid.SHORT,
           );
 
           previousWeight.current = currentWeight;
@@ -188,7 +195,7 @@ const RecordPage = ({ route, navigation }) => {
               newPieces[pcsIndex].pcs -= 1;
               ToastAndroid.show(
                 `✓ Removed 1 piece (${Math.abs(weightChange).toFixed(1)}kg)`,
-                ToastAndroid.SHORT
+                ToastAndroid.SHORT,
               );
               previousWeight.current = currentWeight;
             }
@@ -248,7 +255,7 @@ const RecordPage = ({ route, navigation }) => {
         id: user?.clerkId || "",
         name: `${user?.fName || ""} ${user?.lName || ""}`.trim() || "Unknown",
       },
-      supplier: supplier, // This is what Firestore expects - using the supplier object
+      supplier: supplier,
       destination: {
         id: destinationId,
         name: destinationName,
@@ -264,7 +271,7 @@ const RecordPage = ({ route, navigation }) => {
     }),
     [
       user,
-      supplier, // Using supplier object
+      supplier,
       destinationId,
       destinationName,
       batchCode,
@@ -272,7 +279,7 @@ const RecordPage = ({ route, navigation }) => {
       carcasTypeName,
       tagId,
       ageMonths,
-    ]
+    ],
   );
 
   // === FETCH PREVIOUS RECORDS ===
@@ -284,7 +291,7 @@ const RecordPage = ({ route, navigation }) => {
         if (networkState.isConnected && BusinessId) {
           const fieldCollectionsRef = collection(
             db,
-            `Businesses/${BusinessId}/FieldCollections`
+            `Businesses/${BusinessId}/FieldCollections`,
           );
           const q = query(fieldCollectionsRef, orderBy("timestamp", "desc"));
           const snapshot = await getDocs(q);
@@ -295,7 +302,7 @@ const RecordPage = ({ route, navigation }) => {
           allRecords = [
             ...collections,
             ...firestoreRecords.filter(
-              (fr) => !collections.some((cr) => cr.id === fr.id)
+              (fr) => !collections.some((cr) => cr.id === fr.id),
             ),
           ];
         }
@@ -309,7 +316,7 @@ const RecordPage = ({ route, navigation }) => {
               record.tagId !== tagId &&
               record.carcasType &&
               record.weights &&
-              Array.isArray(record.weights)
+              Array.isArray(record.weights),
           )
           .flatMap((record) => {
             if (!record.weights || !Array.isArray(record.weights)) return [];
@@ -321,7 +328,7 @@ const RecordPage = ({ route, navigation }) => {
                     tagId: record.tagId || "N/A",
                     label: record.carcasType?.name || "Unknown",
                     batchCode: record.batchCode || "N/A",
-                    supplier: record.supplier?.name || "N/A", // Using supplier for display
+                    supplier: record.supplier?.name || "N/A",
                     destination: record.destination?.name || "N/A",
                     ageMonths:
                       record.ageMonths !== undefined ? record.ageMonths : 0,
@@ -336,14 +343,14 @@ const RecordPage = ({ route, navigation }) => {
           const existingIds = new Set(prev.map((r) => r.id));
           const newRecords = prevRecords.filter((r) => !existingIds.has(r.id));
           return [...prev, ...newRecords].sort(
-            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
           );
         });
       } catch (error) {
         console.error("Error fetching records:", error);
         ToastAndroid.show(
           "Error fetching previous records",
-          ToastAndroid.SHORT
+          ToastAndroid.SHORT,
         );
       }
     };
@@ -355,7 +362,7 @@ const RecordPage = ({ route, navigation }) => {
     const pairIndex = Math.floor(colIndex / 2);
     const key = `${rowIndex}-${pairIndex}`;
     setSelectedPairIndices((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
+      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key],
     );
   };
 
@@ -399,7 +406,7 @@ const RecordPage = ({ route, navigation }) => {
       setShowDelete(false);
       ToastAndroid.show(
         `${selectedPairIndices.length} pair(s) cleared.`,
-        ToastAndroid.SHORT
+        ToastAndroid.SHORT,
       );
     }
   };
@@ -411,11 +418,7 @@ const RecordPage = ({ route, navigation }) => {
       const isCurrentRow = row === currentRowIndex.current;
 
       rows.push(
-        <TouchableOpacity
-          key={`row-${row}`}
-          style={styles.tableRow}
-          activeOpacity={1}
-        >
+        <View key={`row-${row}`} style={styles.tableRow}>
           {Array.from({ length: TOTAL_COLUMNS }).map((_, colIndex) => {
             const pairIndex = Math.floor(colIndex / 2);
             const isPcsColumn = colIndex % 2 === 0;
@@ -453,19 +456,21 @@ const RecordPage = ({ route, navigation }) => {
                     isWeightColumn && item.weight > 0 && styles.filledText,
                   ]}
                   numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.5}
                 >
                   {isPcsColumn
                     ? item.pcs > 0
                       ? item.pcs
                       : ""
                     : item.weight > 0
-                    ? `${item.weight} kgs`
-                    : ""}
+                      ? `${item.weight}`
+                      : ""}
                 </Text>
               </TouchableOpacity>
             );
           })}
-        </TouchableOpacity>
+        </View>,
       );
     }
     return rows;
@@ -493,7 +498,7 @@ const RecordPage = ({ route, navigation }) => {
           {item.ageMonths ? `${item.ageMonths} months` : "N/A"}
         </Text>
         <Text style={[styles.tableCell, { minWidth: 100 }]}>
-          {item.supplier || "N/A"} {/* Using supplier for display */}
+          {item.supplier || "N/A"}
         </Text>
         <Text style={[styles.tableCell, { minWidth: 60 }]}>
           {item.weight || "0.00"}
@@ -560,7 +565,7 @@ const RecordPage = ({ route, navigation }) => {
       });
 
       const batch = batchCode;
-      const client = clientName; // Changed to client
+      const client = clientName;
       const destination = destinationName;
       const carcasType = carcasTypeName;
       const server = fieldCollectionData.clerk.name || "Unknown";
@@ -589,7 +594,7 @@ const RecordPage = ({ route, navigation }) => {
       receiptData += separator;
 
       // Client and Destination - CHANGED HERE
-      receiptData += `Client: ${client.slice(0, 22).padEnd(22)}\n`; // Changed from Supplier to Client
+      receiptData += `Client: ${client.slice(0, 22).padEnd(22)}\n`;
       receiptData += `Destination: ${destination.slice(0, 22).padEnd(22)}\n`;
 
       receiptData += separator;
@@ -645,7 +650,7 @@ const RecordPage = ({ route, navigation }) => {
     if (!hasCapturedWeights) {
       ToastAndroid.show(
         "Please capture at least one weight before saving",
-        ToastAndroid.SHORT
+        ToastAndroid.SHORT,
       );
       setLoading(false);
       return;
@@ -655,7 +660,7 @@ const RecordPage = ({ route, navigation }) => {
       const newRecord = {
         ...fieldCollectionData,
         batchCode: batchCode,
-        supplier: supplier, // This is the key - saving supplier object to Firestore
+        supplier: supplier,
         destination: {
           id: destinationId,
           name: destinationName,
@@ -693,7 +698,7 @@ const RecordPage = ({ route, navigation }) => {
         // Save to Firestore (admin side)
         const fieldCollectionsRef = collection(
           db,
-          `Businesses/${BusinessId}/FieldCollections`
+          `Businesses/${BusinessId}/FieldCollections`,
         );
         const docRef = await addDoc(fieldCollectionsRef, newRecord);
 
@@ -707,7 +712,7 @@ const RecordPage = ({ route, navigation }) => {
             tagId: newRecord.tagId || "N/A",
             label: newRecord.carcasType?.name || "Unknown",
             batchCode: newRecord.batchCode || "N/A",
-            supplier: newRecord.supplier?.name || "N/A", // Using supplier for display
+            supplier: newRecord.supplier?.name || "N/A",
             destination: newRecord.destination?.name || "N/A",
             ageMonths: newRecord.ageMonths || 0,
             weight: parseFloat(item.weight || 0).toFixed(2),
@@ -716,19 +721,19 @@ const RecordPage = ({ route, navigation }) => {
           }));
         setPreviousRecords((prev) =>
           [...newPrevRecords, ...prev].sort(
-            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-          )
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
+          ),
         );
 
         // Also save locally for offline access
         store.dispatch(
-          setCollections([...collections, { ...newRecord, id: docRef.id }])
+          setCollections([...collections, { ...newRecord, id: docRef.id }]),
         );
 
         resetForm();
         ToastAndroid.show(
           "Record saved to admin database!",
-          ToastAndroid.SHORT
+          ToastAndroid.SHORT,
         );
       } else {
         // Save locally when offline
@@ -740,7 +745,7 @@ const RecordPage = ({ route, navigation }) => {
             tagId: newRecord.tagId || "N/A",
             label: newRecord.carcasType?.name || "Unknown",
             batchCode: newRecord.batchCode || "N/A",
-            supplier: newRecord.supplier?.name || "N/A", // Using supplier for display
+            supplier: newRecord.supplier?.name || "N/A",
             destination: newRecord.destination?.name || "N/A",
             ageMonths: newRecord.ageMonths || 0,
             weight: parseFloat(item.weight || 0).toFixed(2),
@@ -748,8 +753,8 @@ const RecordPage = ({ route, navigation }) => {
           }));
         setPreviousRecords((prev) =>
           [...newPrevRecords, ...prev].sort(
-            (a, b) => new Date(b.timestamp) - new Date(a.timestamp)
-          )
+            (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
+          ),
         );
         resetForm();
         ToastAndroid.show("Record saved locally (offline)", ToastAndroid.SHORT);
@@ -759,7 +764,7 @@ const RecordPage = ({ route, navigation }) => {
       console.error("Error saving record:", error);
       ToastAndroid.show(
         "Error saving record: " + error.message,
-        ToastAndroid.SHORT
+        ToastAndroid.SHORT,
       );
       setLoading(false);
     }
@@ -767,7 +772,7 @@ const RecordPage = ({ route, navigation }) => {
 
   const resetForm = () => {
     setCarcusPieces(
-      Array.from({ length: TOTAL_COLUMNS * 20 }, () => ({ pcs: 0, weight: 0 }))
+      Array.from({ length: TOTAL_COLUMNS * 20 }, () => ({ pcs: 0, weight: 0 })),
     );
     currentRowIndex.current = 0;
     currentColumnPair.current = 0;
@@ -784,7 +789,7 @@ const RecordPage = ({ route, navigation }) => {
         waitingForZero
           ? "Place items to count"
           : "Remove items before capturing",
-        ToastAndroid.SHORT
+        ToastAndroid.SHORT,
       );
       return;
     }
@@ -812,7 +817,7 @@ const RecordPage = ({ route, navigation }) => {
       currentRowIndex.current = 0;
       currentColumnPair.current = Math.min(
         currentColumnPair.current + 1,
-        TOTAL_PAIRS - 1
+        TOTAL_PAIRS - 1,
       );
     }
 
@@ -824,248 +829,296 @@ const RecordPage = ({ route, navigation }) => {
 
     ToastAndroid.show(
       "✓ Weight captured. Remove all items to start next batch.",
-      ToastAndroid.SHORT
+      ToastAndroid.SHORT,
     );
   };
 
   return (
-    <View style={styles.container}>
-      <Header refresh={refreshing} handleClick={onRefresh} />
-      <View
-        style={[
-          styles.display,
-          { backgroundColor: scaleData.isStable ? "green" : "red" },
-        ]}
-      >
-        <View style={styles.data}>
-          <Text style={styles.textBold}>Connected Device:</Text>
-          <Text style={styles.textRegular}>
-            {receivedData ? "Connected" : "Disconnected"}
-          </Text>
-          <Text style={styles.textBold}>Scale Stability:</Text>
-          <Text style={styles.textRegular}>
-            {scaleData.isStable ? "Stable" : "Unstable"}
-          </Text>
-        </View>
-        <View>
-          <Text style={styles.textWeight}>
-            {scaleData.reading || "0.00 Kg"}
-          </Text>
-        </View>
-      </View>
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.container}>
+        <Header refresh={refreshing} handleClick={onRefresh} />
 
-      <TouchableOpacity
-        style={[
-          styles.button,
-          { backgroundColor: canCaptureWeight ? "#F2F2F2" : "#ccc" },
-        ]}
-        onPress={handleCapture}
-        disabled={!canCaptureWeight}
-      >
-        <Text
-          style={[
-            styles.textButton,
-            { color: canCaptureWeight ? "#000" : "#666" },
-          ]}
+        <ScrollView
+          style={styles.mainScrollView}
+          showsVerticalScrollIndicator={true}
+          contentContainerStyle={styles.scrollContent}
         >
-          Capture
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.button, { backgroundColor: "#F2F2F2" }]}
-        onPress={() => setModalVisible(true)}
-      >
-        <Text style={styles.textButton}>Print Receipt</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[
-          styles.button,
-          {
-            backgroundColor: loading
-              ? "#ccc"
-              : hasCapturedWeights
-              ? "green"
-              : "#ccc",
-          },
-        ]}
-        onPress={handleSaveRecord}
-        disabled={loading || !hasCapturedWeights}
-      >
-        {loading ? (
-          <ActivityIndicator color="#00FF00" />
-        ) : (
-          <Text
+          {/* Bluetooth Display Section */}
+          <View
             style={[
-              styles.textButton,
-              { color: hasCapturedWeights ? "#fff" : "#666" },
+              styles.display,
+              { backgroundColor: scaleData.isStable ? "green" : "red" },
             ]}
           >
-            Save Record {hasCapturedWeights ? `(${totalPieces} pieces)` : ""}
-          </Text>
-        )}
-      </TouchableOpacity>
-
-      {showDelete && (
-        <TouchableOpacity
-          style={[styles.deleteButton, { backgroundColor: "red" }]}
-          onPress={handleDelete}
-        >
-          <Text style={[styles.textButton, { color: "#fff" }]}>Delete</Text>
-        </TouchableOpacity>
-      )}
-
-      <View style={styles.animalSection}>
-        <Text style={styles.sectionHeader}>Summary</Text>
-        <View style={styles.summaryDetails}>
-          <View style={styles.summaryLeft}>
-            <View style={styles.boxYellow}>
-              <Text style={styles.summaryText}>
-                Total Pieces: {totalPieces}
+            <View style={styles.data}>
+              <Text style={styles.textBold}>Connected Device:</Text>
+              <Text style={styles.textRegular}>
+                {receivedData ? "Connected" : "Disconnected"}
+              </Text>
+              <Text style={styles.textBold}>Scale Stability:</Text>
+              <Text style={styles.textRegular}>
+                {scaleData.isStable ? "Stable" : "Unstable"}
               </Text>
             </View>
-            <View style={styles.boxYellow}>
-              <Text style={styles.summaryText}>
-                Total Weight: {totalWeight} kg
-              </Text>
-            </View>
-            <View style={styles.boxYellow}>
-              <Text style={styles.summaryText}>
-                Average Weight: {averageWeight} kg
-              </Text>
-            </View>
-          </View>
-          <View style={styles.summaryRight}>
-            <View style={styles.boxGreen}>
-              <Text style={styles.summaryText}>
-                Heaviest Carcas: {heaviestCarcus} kg
-              </Text>
-            </View>
-            <View style={styles.boxLightRed}>
-              <Text style={styles.summaryText}>
-                Lightest Carcas: {lightestCarcus} kg
-              </Text>
-            </View>
-          </View>
-        </View>
-
-        <Text style={styles.sectionHeader}>Carcas Details</Text>
-        <View style={styles.animalDetails}>
-          <Text style={styles.detailText}>Batch: {batchCode}</Text>
-          <Text style={styles.detailText}>Client: {clientName}</Text>
-          <Text style={styles.detailText}>Destination: {destinationName}</Text>
-          <Text style={styles.detailText}>Type: {carcasTypeName}</Text>
-        </View>
-
-        <Text style={styles.sectionHeader}>Carcas Weight Records</Text>
-        <ScrollView
-          style={[styles.scroll, { maxHeight: 400 }]}
-          showsVerticalScrollIndicator={true}
-        >
-          <ScrollView horizontal={true} showsHorizontalScrollIndicator={true}>
             <View>
-              <View style={styles.tableHeaderRow}>
-                {Array.from({ length: TOTAL_PAIRS }).map((_, i) => (
-                  <React.Fragment key={`h-${i}`}>
-                    <View style={[styles.squareCell, styles.headerPcs]}>
-                      <Text style={styles.headerText}>pcs</Text>
-                    </View>
-                    <View style={[styles.squareCell, styles.headerWeight]}>
-                      <Text style={styles.headerText}>weight(kgs)</Text>
-                    </View>
-                  </React.Fragment>
-                ))}
-              </View>
-
-              {renderedCarcusPieces}
-
-              {carcusPieces.some((p) => p.weight > 0) && (
-                <View style={styles.totalRow}>
-                  {Array.from({ length: TOTAL_COLUMNS - 1 }).map((_, i) => (
-                    <View key={`t-${i}`} style={styles.squareCell} />
-                  ))}
-                  <View
-                    style={[styles.squareCell, { justifyContent: "center" }]}
-                  >
-                    <Text style={styles.totalText}>
-                      Total: {totalWeight} kg
-                    </Text>
-                  </View>
-                </View>
-              )}
+              <Text style={styles.textWeight}>
+                {scaleData.reading || "0.00 Kg"}
+              </Text>
             </View>
-          </ScrollView>
+          </View>
 
-          {previousRecords.length > 0 && (
-            <>
-              <View style={styles.tableRow}>
+          {/* Action Buttons */}
+          <View style={styles.buttonContainer}>
+            <TouchableOpacity
+              style={[
+                styles.button,
+                { backgroundColor: canCaptureWeight ? "#F2F2F2" : "#ccc" },
+              ]}
+              onPress={handleCapture}
+              disabled={!canCaptureWeight}
+            >
+              <Text
+                style={[
+                  styles.textButton,
+                  { color: canCaptureWeight ? "#000" : "#666" },
+                ]}
+              >
+                Capture
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.button, { backgroundColor: "#F2F2F2" }]}
+              onPress={() => setModalVisible(true)}
+            >
+              <Text style={styles.textButton}>Print Receipt</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.button,
+                {
+                  backgroundColor: loading
+                    ? "#ccc"
+                    : hasCapturedWeights
+                      ? "green"
+                      : "#ccc",
+                },
+              ]}
+              onPress={handleSaveRecord}
+              disabled={loading || !hasCapturedWeights}
+            >
+              {loading ? (
+                <ActivityIndicator color="#00FF00" />
+              ) : (
                 <Text
                   style={[
-                    styles.tableHeader,
-                    {
-                      minWidth: TOTAL_COLUMNS * CELL_SIZE,
-                      backgroundColor: "#e0e0e0",
-                    },
+                    styles.textButton,
+                    { color: hasCapturedWeights ? "#fff" : "#666" },
                   ]}
                 >
-                  Previous Records (Today)
+                  Save Record{" "}
+                  {hasCapturedWeights ? `(${totalPieces} pieces)` : ""}
                 </Text>
-              </View>
-              {renderedPreviousRecords}
-            </>
-          )}
-        </ScrollView>
-      </View>
+              )}
+            </TouchableOpacity>
 
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.centeredView}>
-          <View style={styles.modalView}>
-            <View style={styles.modalNav}>
-              <Text style={styles.touchableText}>Print Receipt</Text>
+            {showDelete && (
+              <TouchableOpacity
+                style={[styles.deleteButton, { backgroundColor: "red" }]}
+                onPress={handleDelete}
+              >
+                <Text style={[styles.textButton, { color: "#fff" }]}>
+                  Delete
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Summary Section */}
+          <View style={styles.animalSection}>
+            <Text style={styles.sectionHeader}>Summary</Text>
+            <View style={styles.summaryDetails}>
+              <View style={styles.summaryLeft}>
+                <View style={styles.boxYellow}>
+                  <Text style={styles.summaryText}>
+                    Total Pieces: {totalPieces}
+                  </Text>
+                </View>
+                <View style={styles.boxYellow}>
+                  <Text style={styles.summaryText}>
+                    Total Weight: {totalWeight} kg
+                  </Text>
+                </View>
+                <View style={styles.boxYellow}>
+                  <Text style={styles.summaryText}>
+                    Average Weight: {averageWeight} kg
+                  </Text>
+                </View>
+              </View>
+              <View style={styles.summaryRight}>
+                <View style={styles.boxGreen}>
+                  <Text style={styles.summaryText}>
+                    Heaviest Carcas: {heaviestCarcus} kg
+                  </Text>
+                </View>
+                <View style={styles.boxLightRed}>
+                  <Text style={styles.summaryText}>
+                    Lightest Carcas: {lightestCarcus} kg
+                  </Text>
+                </View>
+              </View>
             </View>
-            <View style={styles.modalContent}>
-              <TouchableOpacity
-                style={[styles.button, { borderRadius: 20 }]}
-                onPress={handleSwitchBt}
-              >
-                <AntDesign name="printer" size={34} color="blue" />
-                <Text style={styles.textButton}>Reconnect printer</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.button}
-                onPress={async () => {
-                  await showPrinterReceipt();
-                  setModalVisible(false);
-                }}
-              >
-                <Text style={styles.textButton}>Print</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.button}
-                onPress={() => setModalVisible(false)}
-              >
-                <Text style={styles.textButton}>Close</Text>
-              </TouchableOpacity>
+
+            {/* Details Section */}
+            <Text style={styles.sectionHeader}>Carcas Details</Text>
+            <View style={styles.animalDetails}>
+              <Text style={styles.detailText}>Batch: {batchCode}</Text>
+              <Text style={styles.detailText}>Client: {clientName}</Text>
+              <Text style={styles.detailText}>
+                Destination: {destinationName}
+              </Text>
+              <Text style={styles.detailText}>Type: {carcasTypeName}</Text>
+            </View>
+
+            {/* Weight Records Section */}
+            <Text style={styles.sectionHeader}>Carcas Weight Records</Text>
+
+            {/* Horizontal Scroll for Weight Grid */}
+            <View style={styles.tableContainer}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={true}>
+                <View>
+                  <View style={styles.tableHeaderRow}>
+                    {Array.from({ length: TOTAL_PAIRS }).map((_, i) => (
+                      <React.Fragment key={`h-${i}`}>
+                        <View style={[styles.squareCell, styles.headerPcs]}>
+                          <Text style={styles.headerText}>pcs</Text>
+                        </View>
+                        <View style={[styles.squareCell, styles.headerWeight]}>
+                          <Text style={styles.headerText}>weight(kgs)</Text>
+                        </View>
+                      </React.Fragment>
+                    ))}
+                  </View>
+
+                  <ScrollView
+                    style={styles.gridScroll}
+                    showsVerticalScrollIndicator={true}
+                  >
+                    {renderedCarcusPieces}
+
+                    {carcusPieces.some((p) => p.weight > 0) && (
+                      <View style={styles.totalRow}>
+                        {Array.from({ length: TOTAL_COLUMNS - 1 }).map(
+                          (_, i) => (
+                            <View key={`t-${i}`} style={styles.squareCell} />
+                          ),
+                        )}
+                        <View
+                          style={[
+                            styles.squareCell,
+                            { justifyContent: "center" },
+                          ]}
+                        >
+                          <Text style={styles.totalText}>
+                            Total: {totalWeight} kg
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+                  </ScrollView>
+                </View>
+              </ScrollView>
+            </View>
+
+            {/* Previous Records */}
+            {previousRecords.length > 0 && (
+              <>
+                <View style={styles.tableRow}>
+                  <Text
+                    style={[
+                      styles.tableHeader,
+                      {
+                        minWidth: TOTAL_COLUMNS * CELL_SIZE,
+                        backgroundColor: "#e0e0e0",
+                      },
+                    ]}
+                  >
+                    Previous Records (Today)
+                  </Text>
+                </View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={true}
+                  style={styles.prevRecordsScroll}
+                >
+                  <View>{renderedPreviousRecords}</View>
+                </ScrollView>
+              </>
+            )}
+          </View>
+        </ScrollView>
+
+        {/* Print Modal */}
+        <Modal
+          animationType="slide"
+          transparent={true}
+          visible={modalVisible}
+          onRequestClose={() => setModalVisible(false)}
+        >
+          <View style={styles.centeredView}>
+            <View style={styles.modalView}>
+              <View style={styles.modalNav}>
+                <Text style={styles.touchableText}>Print Receipt</Text>
+              </View>
+              <View style={styles.modalContent}>
+                <TouchableOpacity
+                  style={[styles.button, { borderRadius: 20 }]}
+                  onPress={handleSwitchBt}
+                >
+                  <AntDesign name="printer" size={34} color="blue" />
+                  <Text style={styles.textButton}>Reconnect printer</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.button}
+                  onPress={async () => {
+                    await showPrinterReceipt();
+                    setModalVisible(false);
+                  }}
+                >
+                  <Text style={styles.textButton}>Print</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.button}
+                  onPress={() => setModalVisible(false)}
+                >
+                  <Text style={styles.textButton}>Close</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        </View>
-      </Modal>
-    </View>
+        </Modal>
+      </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F9F9F9",
+    paddingTop: Platform.OS === "android" ? 25 : 0,
+  },
   container: {
     flex: 1,
-    alignItems: "center",
-    paddingTop: 10,
     backgroundColor: "#F9F9F9",
+  },
+  mainScrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 20,
+    alignItems: "center",
   },
   display: {
     height: 100,
@@ -1075,24 +1128,32 @@ const styles = StyleSheet.create({
     padding: 10,
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 10,
+    marginVertical: 10,
   },
-  data: { flex: 1 },
-  button: {
+  data: {
+    flex: 1,
+  },
+  buttonContainer: {
     width: screenWidth * 0.9,
+  },
+  button: {
+    width: "100%",
     paddingVertical: 12,
     alignItems: "center",
-    margin: 10,
+    marginVertical: 5,
     borderRadius: 50,
   },
   deleteButton: {
-    width: screenWidth * 0.9,
+    width: "100%",
     paddingVertical: 12,
     alignItems: "center",
-    margin: 10,
+    marginVertical: 5,
     borderRadius: 50,
   },
-  textButton: { fontFamily: "Poppins-Regular", fontSize: 16 },
+  textButton: {
+    fontFamily: "Poppins-Regular",
+    fontSize: 16,
+  },
   animalSection: {
     backgroundColor: "#F2F2F2",
     borderRadius: 10,
@@ -1123,8 +1184,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     marginBottom: 10,
   },
-  summaryLeft: { flex: 1, alignItems: "flex-start", marginRight: 5 },
-  summaryRight: { flex: 1, alignItems: "flex-end", marginLeft: 5 },
+  summaryLeft: {
+    flex: 1,
+    alignItems: "flex-start",
+    marginRight: 5,
+  },
+  summaryRight: {
+    flex: 1,
+    alignItems: "flex-end",
+    marginLeft: 5,
+  },
   boxYellow: {
     backgroundColor: "yellow",
     padding: 5,
@@ -1163,10 +1232,15 @@ const styles = StyleSheet.create({
     color: "#333",
     fontWeight: "500",
   },
-  scroll: {
+  tableContainer: {
     backgroundColor: "white",
     width: screenWidth * 0.95,
     borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: "#ddd",
+  },
+  gridScroll: {
     maxHeight: 400,
   },
   tableHeaderRow: {
@@ -1194,8 +1268,16 @@ const styles = StyleSheet.create({
   highlightedCell: { backgroundColor: "yellow" },
   activePcs: { backgroundColor: "#0066cc" },
   activeWeight: { backgroundColor: "#0066cc" },
-  cellText: { fontFamily: "Poppins-Regular", fontSize: 9, color: "black" },
-  filledText: { fontWeight: "bold", color: "red" },
+  cellText: {
+    fontFamily: "Poppins-Regular",
+    fontSize: 9,
+    color: "black",
+    textAlign: "center",
+  },
+  filledText: {
+    fontWeight: "bold",
+    color: "red",
+  },
   headerPcs: { backgroundColor: "grey" },
   headerWeight: { backgroundColor: "lightblue" },
   headerText: {
@@ -1210,7 +1292,33 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
     backgroundColor: "#f9f9f9",
   },
-  totalText: { fontFamily: "Poppins-Bold", fontSize: 11, color: "black" },
+  totalText: {
+    fontFamily: "Poppins-Bold",
+    fontSize: 11,
+    color: "black",
+    textAlign: "center",
+  },
+
+  // Previous Records Styles
+  prevRecordsScroll: {
+    maxHeight: 200,
+  },
+  tableCell: {
+    fontFamily: "Poppins-Regular",
+    fontSize: 9,
+    padding: 5,
+    textAlign: "center",
+    borderRightWidth: 1,
+    borderColor: "#ddd",
+  },
+  tableHeader: {
+    fontFamily: "Poppins-Bold",
+    fontSize: 11,
+    padding: 8,
+    textAlign: "left",
+  },
+
+  // Text Styles
   textBold: {
     fontFamily: "Poppins-Bold",
     fontSize: Math.min(16, Math.max(12, screenWidth * 0.035)),
@@ -1226,11 +1334,13 @@ const styles = StyleSheet.create({
     fontSize: Math.min(24, Math.max(18, screenWidth * 0.06)),
     color: "white",
   },
+
+  // Modal Styles
   centeredView: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    marginTop: 22,
+    backgroundColor: "rgba(0,0,0,0.5)",
   },
   modalView: {
     margin: 20,
@@ -1245,9 +1355,19 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 5,
   },
-  modalNav: { width: "100%", alignItems: "center", marginBottom: 20 },
-  touchableText: { fontFamily: "Poppins-Bold", fontSize: 20 },
-  modalContent: { width: "100%", alignItems: "center" },
+  modalNav: {
+    width: "100%",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  touchableText: {
+    fontFamily: "Poppins-Bold",
+    fontSize: 20,
+  },
+  modalContent: {
+    width: "100%",
+    alignItems: "center",
+  },
 });
 
 export default RecordPage;

@@ -22,6 +22,12 @@ import RNBluetooth from "react-native-bluetooth-classic";
 
 const screenWidth = Dimensions.get("window").width;
 
+// Responsive sizing function
+const responsiveSize = (size) => {
+  const standardWidth = 375;
+  return (screenWidth * size) / standardWidth;
+};
+
 const HomePage = () => {
   const dispatch = useDispatch();
   const navigation = useNavigation();
@@ -90,7 +96,7 @@ const HomePage = () => {
   const getClients = useCallback(async () => {
     try {
       const snapshot = await getDocs(
-        collection(db, `Businesses/${BusinessId}/Clients`)
+        collection(db, `Businesses/${BusinessId}/Clients`),
       );
       const clients = snapshot.docs.map((doc) => ({
         id: doc.id,
@@ -118,7 +124,7 @@ const HomePage = () => {
   const getLocations = useCallback(async () => {
     try {
       const snapshot = await getDocs(
-        collection(db, `Businesses/${BusinessId}/Locations`)
+        collection(db, `Businesses/${BusinessId}/Locations`),
       );
       const locations = snapshot.docs.map((doc) => ({
         id: doc.id,
@@ -127,7 +133,7 @@ const HomePage = () => {
 
       dispatch(setLocations(locations));
       setLocationsData(
-        locations.map((loc) => ({ label: loc.name, value: loc.id }))
+        locations.map((loc) => ({ label: loc.name, value: loc.id })),
       );
       console.log("Fetched locations:", locations.length);
     } catch (error) {
@@ -139,7 +145,7 @@ const HomePage = () => {
     try {
       const productsCollection = collection(
         db,
-        `Businesses/${BusinessId}/Products`
+        `Businesses/${BusinessId}/Products`,
       );
       const snapshot = await getDocs(productsCollection);
       const products = snapshot.docs.map((doc) => ({
@@ -161,7 +167,7 @@ const HomePage = () => {
           price: p.price,
           label: p.name,
           value: p.id,
-        }))
+        })),
       );
     } catch (error) {
       ToastAndroid.show("Error fetching products", ToastAndroid.SHORT);
@@ -171,7 +177,7 @@ const HomePage = () => {
   const getFieldCollections = useCallback(async () => {
     try {
       const snapshot = await getDocs(
-        collection(db, `Businesses/${BusinessId}/FieldCollections`)
+        collection(db, `Businesses/${BusinessId}/FieldCollections`),
       );
       const all = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
@@ -188,12 +194,12 @@ const HomePage = () => {
       const weekStart = new Date(today);
       weekStart.setDate(today.getDate() - today.getDay());
       const weekly = myRecords.filter(
-        (r) => new Date(r.timestamp) >= weekStart
+        (r) => new Date(r.timestamp) >= weekStart,
       ).length;
 
       const monthStart = new Date(today.getFullYear(), today.getMonth(), 1);
       const monthly = myRecords.filter(
-        (r) => new Date(r.timestamp) >= monthStart
+        (r) => new Date(r.timestamp) >= monthStart,
       ).length;
 
       dispatch(setCollectionRecords({ daily, weekly, monthly }));
@@ -205,7 +211,7 @@ const HomePage = () => {
   const getCarcasTypes = useCallback(async () => {
     try {
       const snapshot = await getDocs(
-        collection(db, `Businesses/${BusinessId}/Products`)
+        collection(db, `Businesses/${BusinessId}/Products`),
       );
       const types = snapshot.docs.map((doc) => ({
         label: doc.data().name,
@@ -339,28 +345,24 @@ const HomePage = () => {
       <View style={styles.container}>
         <Header refresh={refreshing} handleClick={onRefresh} />
 
-        <View style={{ marginTop: 30, gap: 15 }}>
-          {/* 1. BATCH CODE */}
-          <View style={styles.input}>
-            <Text
-              style={{
-                fontFamily: "Poppins-Medium",
-                fontSize: 16,
-                color: "#333",
-              }}
-            >
-              Batch Code:{" "}
+        <View style={styles.formContainer}>
+          {/* 1. BATCH CODE - FIXED LAYOUT */}
+          <View style={styles.batchCodeContainer}>
+            <View style={styles.batchCodeLeft}>
+              <Text style={styles.batchCodeLabel}>Batch Code:</Text>
               <Text
-                style={{ color: "#0066CC", fontFamily: "Poppins-SemiBold" }}
+                style={styles.batchCodeValue}
+                numberOfLines={1}
+                ellipsizeMode="tail"
               >
                 {batchCode || "Generating..."}
               </Text>
-            </Text>
+            </View>
             <TouchableOpacity
               onPress={generateNewBatchCode}
-              style={{ position: "absolute", right: 15 }}
+              style={styles.refreshButton}
             >
-              <Text style={{ color: "#0066CC", fontSize: 12 }}>Refresh</Text>
+              <Text style={styles.refreshText}>Refresh</Text>
             </TouchableOpacity>
           </View>
 
@@ -392,7 +394,7 @@ const HomePage = () => {
 
         <TouchableOpacity
           onPress={handleNavigate}
-          style={[styles.button, styles.button_Bg, { marginTop: 30 }]}
+          style={[styles.button, styles.button_Bg, styles.startButton]}
         >
           <Text style={styles.buttonText}>Start</Text>
         </TouchableOpacity>
@@ -407,27 +409,83 @@ const styles = StyleSheet.create({
     paddingTop: 50,
     alignItems: "center",
     backgroundColor: "#F9F9F9",
+    paddingHorizontal: screenWidth * 0.05,
   },
-  input: {
-    height: 50,
-    borderRadius: 30,
-    paddingHorizontal: 20,
+  formContainer: {
+    marginTop: responsiveSize(30),
+    gap: responsiveSize(15),
+    width: "100%",
+    alignItems: "center",
+  },
+  // Fixed Batch Code Container
+  batchCodeContainer: {
+    height: responsiveSize(50),
+    borderRadius: responsiveSize(30),
+    paddingHorizontal: responsiveSize(20),
     backgroundColor: "#F2F2F2",
-    width: screenWidth * 0.9,
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  batchCodeLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    flex: 1,
+    marginRight: responsiveSize(60), // Space for refresh button
+  },
+  batchCodeLabel: {
+    fontFamily: "Poppins-Medium",
+    fontSize: responsiveSize(14),
+    color: "#333",
+    marginRight: responsiveSize(5),
+  },
+  batchCodeValue: {
+    color: "#0066CC",
+    fontFamily: "Poppins-SemiBold",
+    fontSize: responsiveSize(14),
+    flex: 1,
+  },
+  refreshButton: {
+    position: "absolute",
+    right: responsiveSize(15),
+    paddingVertical: responsiveSize(5),
+    paddingHorizontal: responsiveSize(10),
+    backgroundColor: "#0066CC",
+    borderRadius: responsiveSize(15),
+  },
+  refreshText: {
+    color: "#FFFFFF",
+    fontSize: responsiveSize(10),
+    fontFamily: "Poppins-Medium",
+  },
+  // Original input style kept for reference but not used
+  input: {
+    height: responsiveSize(50),
+    borderRadius: responsiveSize(30),
+    paddingHorizontal: responsiveSize(20),
+    backgroundColor: "#F2F2F2",
+    width: "100%",
     justifyContent: "center",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   button: {
-    height: 50,
-    borderRadius: 30,
+    height: responsiveSize(50),
+    borderRadius: responsiveSize(30),
     alignItems: "center",
     justifyContent: "center",
-    width: screenWidth * 0.9,
+    width: "100%",
   },
   button_Bg: { backgroundColor: "#F2F2F2" },
-  buttonText: { fontSize: 16, fontFamily: "Poppins-Medium" },
+  startButton: {
+    marginTop: responsiveSize(30),
+  },
+  buttonText: {
+    fontSize: responsiveSize(16),
+    fontFamily: "Poppins-Medium",
+  },
 });
 
 export default HomePage;
