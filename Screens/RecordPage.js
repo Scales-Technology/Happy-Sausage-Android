@@ -125,7 +125,11 @@ const RecordPage = ({ route, navigation }) => {
 
   // === PARSE BLUETOOTH DATA ===
   useEffect(() => {
-    if (receivedData) {
+    if (receivedData) {console.log(
+      "[SCALE RAW DATA]",
+      typeof receivedData,
+      JSON.stringify(receivedData),
+    );
       const parsedData = parseBluetoothData(receivedData);
       if (
         parsedData.reading !== null &&
