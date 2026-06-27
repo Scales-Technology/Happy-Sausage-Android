@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
+import { useSelector } from "react-redux";
 import {
   Text,
   StyleSheet,
@@ -13,6 +14,7 @@ import {
   Modal,
   Alert,
   TouchableWithoutFeedback,
+  ActivityIndicator,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import DropdownComponent from "../Components/DropDown";
@@ -54,6 +56,9 @@ const RECIPES_KEY = "@processing_recipes";
 const PACKING_RECORDS_KEY = "@packing_records";
 const PACKED_PRODUCTS_KEY = "@packed_products";
 const DISPATCH_RECORDS_KEY = "@dispatch_records";
+const USED_STOCK_KEY = "@used_stock_records";
+const WEIGHT_BEFORE_DEBONNING_KEY = "@weight_before_debonning_records";
+const RETURNED_RECORDS_KEY = "@returned_stock_records";
 
 // Helper function to sync data to Firebase
 const syncToFirebase = async (collectionName, data, businessId) => {
@@ -194,6 +199,10 @@ const CreateRecipeModal = ({
   const [selectedIngredientType, setSelectedIngredientType] = useState(null);
   const [selectedIngredientItem, setSelectedIngredientItem] = useState(null);
   const [pieceWeight, setPieceWeight] = useState(0);
+  const [weightMismatchModalVisible, setWeightMismatchModalVisible] =
+    useState(false);
+  const [mismatchData, setMismatchData] = useState(null);
+  const [isProcessingSave, setIsProcessingSave] = useState(false);
 
   useEffect(() => {
     if (!visible) {
@@ -204,6 +213,9 @@ const CreateRecipeModal = ({
       setDryGoodsSearchText("");
       setCarcassSearchText("");
       setPieceWeight(0);
+      setWeightMismatchModalVisible(false);
+      setMismatchData(null);
+      setIsProcessingSave(false);
     }
   }, [visible]);
 
@@ -301,39 +313,62 @@ const CreateRecipeModal = ({
     const piecesPerPackNum = parseInt(piecesPerPack);
     const pieceWeightNum = pieceWeight;
     const calculatedPackWeight = pieceWeightNum * piecesPerPackNum;
+    const calculatedPackWeightGrams = calculatedPackWeight * 1000;
 
-    if (Math.abs(calculatedPackWeight * 1000 - packSizeNum) > 1) {
-      Alert.alert(
-        "Weight Mismatch",
-        `Calculated pack weight: ${(calculatedPackWeight * 1000).toFixed(2)}g\n` +
-          `Entered pack size: ${packSizeNum}g\n\nDo you want to continue?`,
-        [
-          { text: "Cancel", style: "cancel" },
-          { text: "Continue", onPress: () => saveRecipeData() },
-        ],
-      );
-    } else {
-      saveRecipeData();
+    if (Math.abs(calculatedPackWeightGrams - packSizeNum) > 1) {
+      setMismatchData({
+        packSizeEntered: packSizeNum,
+        calculatedPackWeight: calculatedPackWeightGrams,
+        pieceWeight: pieceWeightNum,
+        piecesPerPack: piecesPerPackNum,
+        difference: Math.abs(calculatedPackWeightGrams - packSizeNum),
+        isOverweight: calculatedPackWeightGrams > packSizeNum,
+        ingredientCount: recipeItems.length,
+        ingredientSummary: recipeItems.map((i) => ({
+          name: i.itemName,
+          amount: i.amountPerPiece * 1000,
+        })),
+      });
+      setWeightMismatchModalVisible(true);
+      return;
     }
+
+    saveRecipeData();
   };
 
   const saveRecipeData = () => {
+    setIsProcessingSave(true);
     const packSizeNum = parseFloat(packSize);
     const piecesPerPackNum = parseInt(piecesPerPack);
-    onSave(
-      recipeName.trim(),
-      recipeItems,
-      packSizeNum,
-      piecesPerPackNum,
-      pieceWeight,
-    );
-    onClose();
+    try {
+      onSave(
+        recipeName.trim(),
+        recipeItems,
+        packSizeNum,
+        piecesPerPackNum,
+        pieceWeight,
+      );
+      setWeightMismatchModalVisible(false);
+      setMismatchData(null);
+      setIsProcessingSave(false);
+      onClose();
+    } catch (error) {
+      setIsProcessingSave(false);
+      ToastAndroid.show("Error saving recipe", ToastAndroid.SHORT);
+    }
   };
 
   const renderDryGoodsItem = ({ item }) => (
     <View style={styles.stockItem}>
       <View style={styles.stockDetails}>
-        <Text style={styles.stockType}>{item.label}</Text>
+        <Text style={styles.stockType}>{item.displayName || item.label}</Text>
+        {item.description && (
+          <Text style={styles.stockInfo}>Description: {item.description}</Text>
+        )}
+        {item.unit && <Text style={styles.stockInfo}>Unit: {item.unit}</Text>}
+        <Text style={styles.stockInfo}>
+          Available: {item.totalWeight?.toFixed(3) || "0.000"} kg
+        </Text>
       </View>
       <TouchableOpacity
         style={[styles.removeButton, { backgroundColor: "#0066CC" }]}
@@ -393,133 +428,467 @@ const CreateRecipeModal = ({
     </View>
   );
 
-  return (
-    <Modal
-      animationType="slide"
-      transparent={false}
-      visible={visible}
-      onRequestClose={onClose}
-    >
-      <View style={{ flex: 1, backgroundColor: "#F9F9F9" }}>
-        <TouchableOpacity style={styles.backButton} onPress={onClose}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
-          <View style={styles.dryGoodsContainer}>
-            <Text style={styles.dryGoodsTitle}>Create Recipe</Text>
+  const WeightMismatchModal = () => {
+    if (!mismatchData) return null;
 
-            <TextInput
-              style={styles.inputField}
-              placeholder="Product Name (e.g., Beef Sausage)"
-              value={recipeName}
-              onChangeText={setRecipeName}
-            />
+    const {
+      packSizeEntered,
+      calculatedPackWeight,
+      pieceWeight,
+      piecesPerPack,
+      difference,
+      isOverweight,
+      ingredientSummary,
+    } = mismatchData;
 
-            <TextInput
-              style={styles.inputField}
-              placeholder="Pack Size (g) e.g., 500"
-              keyboardType="decimal-pad"
-              value={packSize}
-              onChangeText={setPackSize}
-            />
+    const correctionFactor = packSizeEntered / calculatedPackWeight;
+    const correctedPieceWeight = pieceWeight * correctionFactor;
 
-            <TextInput
-              style={styles.inputField}
-              placeholder="Pieces per Pack"
-              keyboardType="numeric"
-              value={piecesPerPack}
-              onChangeText={setPiecesPerPack}
-            />
+    return (
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={weightMismatchModalVisible}
+        onRequestClose={() => setWeightMismatchModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <ScrollView
+            style={{ maxHeight: "90%" }}
+            showsVerticalScrollIndicator={false}
+          >
+            <View
+              style={[
+                styles.modalContent,
+                { width: "90%", backgroundColor: "#1a1a2e" },
+              ]}
+            >
+              <Text
+                style={[styles.modalTitle, { color: "#FF4444", fontSize: 20 }]}
+              >
+                ⚠️ Weight Mismatch Detected!
+              </Text>
 
-            {pieceWeight > 0 && (
-              <View style={styles.recipeSummary}>
-                <Text style={styles.recordsHeader}>Calculated Values:</Text>
-                <Text style={styles.stockInfo}>
-                  Piece Weight: {pieceWeight.toFixed(6)} kg (
-                  {pieceWeight * 1000} g)
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 10,
+                }}
+              />
+
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#fff", fontWeight: "bold" },
+                ]}
+              >
+                📊 Current Calculation:
+              </Text>
+              <Text
+                style={[styles.modalSubtitle, { color: "#aaa", marginLeft: 8 }]}
+              >
+                • Total ingredients per piece: {(pieceWeight * 1000).toFixed(1)}
+                g
+              </Text>
+              <Text
+                style={[styles.modalSubtitle, { color: "#aaa", marginLeft: 8 }]}
+              >
+                • Pieces per pack: {piecesPerPack}
+              </Text>
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#FFA500", marginLeft: 8 },
+                ]}
+              >
+                • Calculated pack weight: {calculatedPackWeight.toFixed(1)}g
+              </Text>
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#4CAF50", marginLeft: 8 },
+                ]}
+              >
+                • You entered: {packSizeEntered}g
+              </Text>
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#FF4444", marginLeft: 8, fontWeight: "bold" },
+                ]}
+              >
+                • Difference: {difference.toFixed(1)}g (
+                {isOverweight ? "OVER" : "UNDER"} by {difference.toFixed(1)}g)
+              </Text>
+
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 10,
+                }}
+              />
+
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#fff", fontWeight: "bold" },
+                ]}
+              >
+                📝 Ingredients Breakdown:
+              </Text>
+              {ingredientSummary.map((item, idx) => (
+                <Text
+                  key={idx}
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  • {item.name}: {item.amount.toFixed(1)}g
                 </Text>
-                <Text style={styles.stockInfo}>
-                  Pack Weight:{" "}
-                  {(pieceWeight * (parseInt(piecesPerPack) || 0)).toFixed(6)} kg
+              ))}
+
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 10,
+                }}
+              />
+
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#4CAF50", fontWeight: "bold" },
+                ]}
+              >
+                💡 How to Fix:
+              </Text>
+
+              <View
+                style={{
+                  backgroundColor: "#0a0a1a",
+                  borderRadius: 8,
+                  padding: 12,
+                  marginTop: 8,
+                }}
+              >
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#FFA500", fontWeight: "bold" },
+                  ]}
+                >
+                  Option 1: Increase Pack Size
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  Change pack size to: {calculatedPackWeight.toFixed(0)}g
                 </Text>
               </View>
-            )}
 
-            <Text style={styles.sectionHeader}>
-              Select Dry Goods (in stock)
-            </Text>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search dry goods..."
-              value={dryGoodsSearchText}
-              onChangeText={setDryGoodsSearchText}
-            />
-            <FlatList
-              data={filteredDryGoods}
-              keyExtractor={(item) => item.value}
-              renderItem={renderDryGoodsItem}
-              ListEmptyComponent={
-                <Text style={styles.emptyText}>
-                  No dry goods available in stock
+              <View
+                style={{
+                  backgroundColor: "#0a0a1a",
+                  borderRadius: 8,
+                  padding: 12,
+                  marginTop: 8,
+                }}
+              >
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#FFA500", fontWeight: "bold" },
+                  ]}
+                >
+                  Option 2: Reduce Ingredients Proportionally
                 </Text>
-              }
-              scrollEnabled={false}
-              keyboardShouldPersistTaps="handled"
-            />
-
-            <Text style={styles.sectionHeader}>Select Carcass (in stock)</Text>
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search carcass..."
-              value={carcassSearchText}
-              onChangeText={setCarcassSearchText}
-            />
-            <FlatList
-              data={filteredCarcass}
-              keyExtractor={(item) => item.id}
-              renderItem={renderCarcassItem}
-              ListEmptyComponent={
-                <Text style={styles.emptyText}>
-                  No carcass available in stock
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  Multiply each ingredient by: {correctionFactor.toFixed(3)}
                 </Text>
-              }
-              scrollEnabled={false}
-              keyboardShouldPersistTaps="handled"
-            />
-
-            {recipeItems.length > 0 && (
-              <>
-                <Text style={styles.recordsHeader}>
-                  Recipe Ingredients ({recipeItems.length})
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  New piece weight: {correctedPieceWeight.toFixed(4)}kg (
+                  {correctedPieceWeight * 1000}g)
                 </Text>
-                <FlatList
-                  data={recipeItems}
-                  keyExtractor={(item) => item.id}
-                  renderItem={renderRecipeIngredient}
-                  scrollEnabled={false}
-                  keyboardShouldPersistTaps="handled"
-                />
-              </>
-            )}
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    {
+                      color: "#aaa",
+                      marginLeft: 8,
+                      fontSize: 10,
+                      fontStyle: "italic",
+                    },
+                  ]}
+                >
+                  Formula: Entered Pack Size ÷ Calculated Pack Weight ={" "}
+                  {packSizeEntered} ÷ {calculatedPackWeight.toFixed(1)} ={" "}
+                  {correctionFactor.toFixed(3)}
+                </Text>
+              </View>
 
-            <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
-              <Text style={styles.saveButtonText}>Save Recipe</Text>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      </View>
-      <AddAmountModal
-        visible={amountModalVisible}
-        item={selectedIngredientItem}
-        onAdd={(amount) =>
-          addIngredient(selectedIngredientType, selectedIngredientItem, amount)
-        }
-        onClose={() => {
-          setAmountModalVisible(false);
-          setSelectedIngredientItem(null);
-        }}
-      />
-    </Modal>
+              <View
+                style={{
+                  backgroundColor: "#0a0a1a",
+                  borderRadius: 8,
+                  padding: 12,
+                  marginTop: 8,
+                }}
+              >
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#FFA500", fontWeight: "bold" },
+                  ]}
+                >
+                  📐 Simple Example:
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  For a 250g sausage with 2 ingredients:
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  • Meat: 200g (0.200kg)
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#aaa", marginLeft: 8 },
+                  ]}
+                >
+                  • Salt: 50g (0.050kg)
+                </Text>
+                <Text
+                  style={[
+                    styles.modalSubtitle,
+                    { color: "#4CAF50", marginLeft: 8 },
+                  ]}
+                >
+                  ✅ Total: 250g ✅ MATCHES pack size!
+                </Text>
+              </View>
+
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 10,
+                }}
+              />
+
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#FF4444", textAlign: "center", fontSize: 12 },
+                ]}
+              >
+                ⚠️ You CANNOT continue with this mismatch.
+              </Text>
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#aaa", textAlign: "center", fontSize: 11 },
+                ]}
+              >
+                Please fix your recipe first using the options above.
+              </Text>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[
+                    styles.modalButton,
+                    { backgroundColor: "#FF4444", opacity: 0.5 },
+                  ]}
+                  disabled={true}
+                >
+                  <Text style={[styles.modalButtonText, { color: "#888" }]}>
+                    ❌ Continue (Disabled)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#4CAF50" }]}
+                  onPress={() => {
+                    setWeightMismatchModalVisible(false);
+                    setMismatchData(null);
+                  }}
+                >
+                  <Text style={styles.modalButtonText}>✏️ Fix Recipe</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+      </Modal>
+    );
+  };
+
+  return (
+    <>
+      <Modal
+        animationType="slide"
+        transparent={false}
+        visible={visible}
+        onRequestClose={onClose}
+      >
+        <View style={{ flex: 1, backgroundColor: "#F9F9F9" }}>
+          <TouchableOpacity style={styles.backButton} onPress={onClose}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+          <ScrollView style={{ flex: 1 }} keyboardShouldPersistTaps="handled">
+            <View style={styles.dryGoodsContainer}>
+              <Text style={styles.dryGoodsTitle}>Create Recipe</Text>
+
+              <TextInput
+                style={styles.inputField}
+                placeholder="Product Name (e.g., Beef Sausage)"
+                value={recipeName}
+                onChangeText={setRecipeName}
+              />
+
+              <TextInput
+                style={styles.inputField}
+                placeholder="Pack Size (g) e.g., 500"
+                keyboardType="decimal-pad"
+                value={packSize}
+                onChangeText={setPackSize}
+              />
+
+              <TextInput
+                style={styles.inputField}
+                placeholder="Pieces per Pack"
+                keyboardType="numeric"
+                value={piecesPerPack}
+                onChangeText={setPiecesPerPack}
+              />
+
+              {pieceWeight > 0 && (
+                <View style={styles.recipeSummary}>
+                  <Text style={styles.recordsHeader}>Calculated Values:</Text>
+                  <Text style={styles.stockInfo}>
+                    Piece Weight: {pieceWeight.toFixed(6)} kg (
+                    {pieceWeight * 1000} g)
+                  </Text>
+                  <Text style={styles.stockInfo}>
+                    Pack Weight:{" "}
+                    {(pieceWeight * (parseInt(piecesPerPack) || 0)).toFixed(6)}{" "}
+                    kg
+                  </Text>
+                </View>
+              )}
+
+              <Text style={styles.sectionHeader}>
+                Select Dry Goods (in stock)
+              </Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search dry goods..."
+                value={dryGoodsSearchText}
+                onChangeText={setDryGoodsSearchText}
+              />
+              <FlatList
+                data={filteredDryGoods}
+                keyExtractor={(item) => item.value}
+                renderItem={renderDryGoodsItem}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>
+                    No dry goods available in stock
+                  </Text>
+                }
+                scrollEnabled={false}
+                keyboardShouldPersistTaps="handled"
+              />
+
+              <Text style={styles.sectionHeader}>
+                Select Carcass (in stock)
+              </Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search carcass..."
+                value={carcassSearchText}
+                onChangeText={setCarcassSearchText}
+              />
+              <FlatList
+                data={filteredCarcass}
+                keyExtractor={(item) => item.id}
+                renderItem={renderCarcassItem}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>
+                    No carcass available in stock
+                  </Text>
+                }
+                scrollEnabled={false}
+                keyboardShouldPersistTaps="handled"
+              />
+
+              {recipeItems.length > 0 && (
+                <>
+                  <Text style={styles.recordsHeader}>
+                    Recipe Ingredients ({recipeItems.length})
+                  </Text>
+                  <FlatList
+                    data={recipeItems}
+                    keyExtractor={(item) => item.id}
+                    renderItem={renderRecipeIngredient}
+                    scrollEnabled={false}
+                    keyboardShouldPersistTaps="handled"
+                  />
+                </>
+              )}
+
+              <TouchableOpacity
+                style={styles.saveButton}
+                onPress={handleSave}
+                disabled={isProcessingSave}
+              >
+                <Text style={styles.saveButtonText}>
+                  {isProcessingSave ? "Saving..." : "Save Recipe"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+        <AddAmountModal
+          visible={amountModalVisible}
+          item={selectedIngredientItem}
+          onAdd={(amount) =>
+            addIngredient(
+              selectedIngredientType,
+              selectedIngredientItem,
+              amount,
+            )
+          }
+          onClose={() => {
+            setAmountModalVisible(false);
+            setSelectedIngredientItem(null);
+          }}
+        />
+      </Modal>
+      <WeightMismatchModal />
+    </>
   );
 };
 
@@ -610,7 +979,6 @@ const PackingScreen = ({ onClose }) => {
   const [meatPackCounter, setMeatPackCounter] = useState(1);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Meat Packing Configuration Modal
   const [meatConfigModalVisible, setMeatConfigModalVisible] = useState(false);
   const [selectedDebonnedItem, setSelectedDebonnedItem] = useState(null);
   const [meatType, setMeatType] = useState("");
@@ -618,7 +986,6 @@ const PackingScreen = ({ onClose }) => {
   const [packSizeGrams, setPackSizeGrams] = useState("");
   const [piecesPerPack, setPiecesPerPack] = useState("");
 
-  // Calculated values
   const [calculatedPieces, setCalculatedPieces] = useState(0);
   const [calculatedPacks, setCalculatedPacks] = useState(0);
   const [remainingWeightAfterPack, setRemainingWeightAfterPack] = useState(0);
@@ -632,7 +999,6 @@ const PackingScreen = ({ onClose }) => {
     loadMeatPackCounter();
   }, []);
 
-  // Group inventory whenever packedProducts changes
   useEffect(() => {
     groupInventory(packedProducts);
   }, [packedProducts]);
@@ -679,7 +1045,6 @@ const PackingScreen = ({ onClose }) => {
     }
   }, [recordsSearchText, packingRecords]);
 
-  // Calculate values when inputs change
   useEffect(() => {
     if (
       selectedDebonnedItem &&
@@ -1791,10 +2156,10 @@ const ProcessingScreen = ({ onClose }) => {
   const [isBulkMode, setIsBulkMode] = useState(false);
   const [productionPieces, setProductionPieces] = useState(1);
   const [processingBatchCounter, setProcessingBatchCounter] = useState(1);
-  const [missingIngredientsWarnings, setMissingIngredientsWarnings] = useState(
-    {},
-  );
   const [destinationScreen, setDestinationScreen] = useState(null);
+  const [stockCheckResult, setStockCheckResult] = useState(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [usedStockRecords, setUsedStockRecords] = useState([]);
 
   const searchTimer = useRef(null);
   const dryGoodsTimer = useRef(null);
@@ -1804,11 +2169,19 @@ const ProcessingScreen = ({ onClose }) => {
   useEffect(() => {
     loadAllData();
     loadProcessingBatchCounter();
+    loadUsedStockRecords();
   }, []);
 
-  useEffect(() => {
-    calculateMissingIngredientsForAllRecipes();
-  }, [dryGoodsStock, carcassItems, savedRecipes]);
+  const loadUsedStockRecords = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(USED_STOCK_KEY);
+      if (stored) {
+        setUsedStockRecords(JSON.parse(stored));
+      }
+    } catch (error) {
+      console.error("Failed to load used stock records:", error);
+    }
+  };
 
   useEffect(() => {
     if (searchTimer.current) clearTimeout(searchTimer.current);
@@ -1876,52 +2249,6 @@ const ProcessingScreen = ({ onClose }) => {
     return () => recipeTimer.current && clearTimeout(recipeTimer.current);
   }, [recipeSearchText, savedRecipes]);
 
-  const getMissingIngredientsForRecipe = (recipe) => {
-    const missing = [];
-    for (const ingredient of recipe.items) {
-      if (ingredient.type === "dry") {
-        const stockItem = dryGoodsStock.find(
-          (s) => s.type === ingredient.itemId,
-        );
-        if (!stockItem || stockItem.totalWeight < ingredient.amountPerPiece) {
-          const available = stockItem ? stockItem.totalWeight : 0;
-          missing.push({
-            name: ingredient.itemName,
-            neededPerPiece: ingredient.amountPerPiece,
-            available: available,
-            type: "dry",
-          });
-        }
-      } else if (ingredient.type === "carcass") {
-        const carcassItem = carcassItems.find(
-          (c) => c.id === ingredient.itemId,
-        );
-        if (
-          !carcassItem ||
-          carcassItem.currentWeight < ingredient.amountPerPiece
-        ) {
-          const available = carcassItem ? carcassItem.currentWeight : 0;
-          missing.push({
-            name: ingredient.itemName,
-            neededPerPiece: ingredient.amountPerPiece,
-            available: available,
-            type: "carcass",
-          });
-        }
-      }
-    }
-    return missing;
-  };
-
-  const calculateMissingIngredientsForAllRecipes = () => {
-    const warnings = {};
-    for (const recipe of savedRecipes) {
-      const missing = getMissingIngredientsForRecipe(recipe);
-      if (missing.length > 0) warnings[recipe.id] = missing;
-    }
-    setMissingIngredientsWarnings(warnings);
-  };
-
   const loadProcessingBatchCounter = async () => {
     try {
       const stored = await AsyncStorage.getItem("@processing_batch_counter");
@@ -1948,6 +2275,7 @@ const ProcessingScreen = ({ onClose }) => {
       loadDryGoodsStock(),
       loadCarcassItems(),
       loadSavedRecipes(),
+      loadUsedStockRecords(),
     ]);
   };
 
@@ -2031,11 +2359,17 @@ const ProcessingScreen = ({ onClose }) => {
         const stockList = JSON.parse(stock);
         setDryGoodsStock(stockList);
         const items = stockList.map((item) => ({
-          label: `${item.type} (${item.totalWeight.toFixed(6)} kg)`,
-          value: item.type,
+          label: `${item.description || item.itemCode || item.type} (${item.totalWeight.toFixed(3)} kg)`,
+          value: item.itemCode || item.type,
+          displayName: item.description || item.itemCode || item.type,
+          description: item.description || "",
+          unit: item.unit || "KG",
           type: item.type,
           totalWeight: item.totalWeight,
           id: item.id,
+          itemCode: item.itemCode,
+          batchNumber: item.batchNumber,
+          bomType: item.bomType,
         }));
         setDryGoodsItems(items);
         setFilteredDryGoods(items);
@@ -2060,6 +2394,8 @@ const ProcessingScreen = ({ onClose }) => {
           type: item.type,
           currentWeight: item.currentWeight || item.totalWeight,
           originalWeight: item.weightAfterDebonning || item.totalWeight,
+          itemCode: item.itemCode,
+          bomType: item.bomType,
         }));
         setCarcassItems(items);
         setFilteredCarcass(items);
@@ -2072,7 +2408,9 @@ const ProcessingScreen = ({ onClose }) => {
   const checkStockAvailability = (requirements) => {
     const missingItems = [];
     for (const req of requirements.dryGoods) {
-      const stockItem = dryGoodsStock.find((s) => s.type === req.itemId);
+      const stockItem = dryGoodsStock.find(
+        (s) => s.itemCode === req.itemId || s.type === req.itemId,
+      );
       if (!stockItem || stockItem.totalWeight < req.totalAmount) {
         const available = stockItem ? stockItem.totalWeight : 0;
         missingItems.push({
@@ -2080,6 +2418,7 @@ const ProcessingScreen = ({ onClose }) => {
           needed: req.totalAmount,
           available: available,
           type: "dry",
+          unit: "kg",
         });
       }
     }
@@ -2092,6 +2431,7 @@ const ProcessingScreen = ({ onClose }) => {
           needed: req.totalAmount,
           available: available,
           type: "carcass",
+          unit: "kg",
         });
       }
     }
@@ -2101,7 +2441,9 @@ const ProcessingScreen = ({ onClose }) => {
   const calculateMaxPiecesFromStock = (requirements) => {
     let maxPieces = Infinity;
     for (const req of requirements.dryGoods) {
-      const stockItem = dryGoodsStock.find((s) => s.type === req.itemId);
+      const stockItem = dryGoodsStock.find(
+        (s) => s.itemCode === req.itemId || s.type === req.itemId,
+      );
       if (stockItem) {
         const maxForItem = Math.floor(
           stockItem.totalWeight / req.amountPerPiece,
@@ -2130,8 +2472,9 @@ const ProcessingScreen = ({ onClose }) => {
     setItemToProcess(recipe.name);
     setIsBulkMode(true);
     setProductionPieces(1);
+    setStockCheckResult(null);
     ToastAndroid.show(
-      `Recipe: ${recipe.name}. Enter quantity.`,
+      `Recipe: ${recipe.name}. Enter quantity to check availability.`,
       ToastAndroid.LONG,
     );
   };
@@ -2160,28 +2503,47 @@ const ProcessingScreen = ({ onClose }) => {
     return requirements;
   };
 
+  const checkStockForQuantity = (quantity) => {
+    const requirements = calculateRecipeRequirements(quantity);
+    if (!requirements) return null;
+    const missingItems = checkStockAvailability(requirements);
+    const maxPieces = calculateMaxPiecesFromStock(requirements);
+    return {
+      requirements,
+      missingItems,
+      maxPieces,
+      isFullyAvailable: missingItems.length === 0,
+    };
+  };
+
   const applyRecipe = async () => {
     const quantity = parseFloat(productionPieces);
     if (isNaN(quantity) || quantity <= 0) {
       ToastAndroid.show("Enter valid quantity", ToastAndroid.SHORT);
       return;
     }
-    const requirements = calculateRecipeRequirements(quantity);
-    if (!requirements) return;
-    const missingItems = checkStockAvailability(requirements);
-    if (missingItems.length > 0) {
-      const maxPieces = calculateMaxPiecesFromStock(requirements);
+
+    const result = checkStockForQuantity(quantity);
+    if (!result) return;
+
+    const { requirements, missingItems, maxPieces, isFullyAvailable } = result;
+
+    if (!isFullyAvailable) {
       const maxPacks = Math.floor(maxPieces / selectedRecipe.piecesPerPack);
       const remainingPieces = maxPieces % selectedRecipe.piecesPerPack;
-      let message = "Insufficient stock:\n";
+      let message = "❌ Insufficient Stock!\n\n";
+      message += `You requested ${quantity} pieces.\n`;
+      message += `Maximum possible with current stock: ${maxPieces} pieces (${maxPacks} packs + ${remainingPieces} pieces)\n\n`;
+      message += "⚠️ Missing Ingredients:\n";
       missingItems.forEach((item) => {
-        message += `• ${item.name}: need ${item.needed.toFixed(6)} kg, have ${item.available.toFixed(6)} kg\n`;
+        message += `• ${item.name}: Need ${item.needed.toFixed(3)} ${item.unit}, Have ${item.available.toFixed(3)} ${item.unit}\n`;
+        message += `  → Refill: ${(item.needed - item.available).toFixed(3)} ${item.unit}\n`;
       });
-      message += `\nMaximum possible: ${maxPieces} pieces (${maxPacks} packs + ${remainingPieces} pieces)`;
-      Alert.alert("Insufficient Stock", message, [
+
+      Alert.alert("Stock Insufficient", message, [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Continue with Max",
+          text: `Use Max (${maxPieces} pieces)`,
           onPress: () => {
             setProductionPieces(maxPieces);
             setTimeout(() => applyRecipeWithMax(maxPieces), 100);
@@ -2190,6 +2552,7 @@ const ProcessingScreen = ({ onClose }) => {
       ]);
       return;
     }
+
     proceedWithProduction(quantity, requirements);
   };
 
@@ -2282,7 +2645,27 @@ const ProcessingScreen = ({ onClose }) => {
     );
   };
 
+  const saveUsedStockRecord = async (record) => {
+    try {
+      const stored = await AsyncStorage.getItem(USED_STOCK_KEY);
+      let records = stored ? JSON.parse(stored) : [];
+      records.unshift(record);
+      await AsyncStorage.setItem(USED_STOCK_KEY, JSON.stringify(records));
+      setUsedStockRecords(records);
+    } catch (error) {
+      console.error("Failed to save used stock record:", error);
+    }
+  };
+
   const handleProcess = async () => {
+    if (isProcessing) {
+      ToastAndroid.show(
+        "Processing already in progress...",
+        ToastAndroid.SHORT,
+      );
+      return;
+    }
+
     if (!itemToProcess.trim()) {
       ToastAndroid.show("Enter product name", ToastAndroid.SHORT);
       return;
@@ -2291,118 +2674,216 @@ const ProcessingScreen = ({ onClose }) => {
       ToastAndroid.show("Select ingredients", ToastAndroid.SHORT);
       return;
     }
-    const totalPiecesProduced =
-      selectedCarcasses.reduce((sum, c) => sum + (c.piecesProduced || 1), 0) ||
-      1;
-    const packSize = selectedRecipe?.packSize || 500;
-    const piecesPerPack = selectedRecipe?.piecesPerPack || 22;
-    for (const dg of selectedDryGoods) {
-      const used = selectedDryGoodsAmounts[dg.value] || 0;
-      if (used > 0) {
-        const dryStockKey = getStockKeyForStore("dry");
-        const dryStock = await AsyncStorage.getItem(dryStockKey);
-        let list = dryStock ? JSON.parse(dryStock) : [];
-        const idx = list.findIndex((d) => d.type === dg.value);
-        if (idx !== -1) {
-          list[idx].totalWeight -= used;
-          if (list[idx].totalWeight <= 0) list.splice(idx, 1);
-          await AsyncStorage.setItem(dryStockKey, JSON.stringify(list));
-        }
-      }
-    }
-    const carcassesUsedDetails = [];
-    for (const carcass of selectedCarcasses) {
-      const weightUsed = carcass.weightToUse;
-      if (weightUsed > 0) {
-        const newWeight = carcass.currentWeight - weightUsed;
-        const coldStockKey = getStockKeyForStore("cold");
-        const coldStock = await AsyncStorage.getItem(coldStockKey);
-        let coldStockList = coldStock ? JSON.parse(coldStock) : [];
-        const idx = coldStockList.findIndex((c) => c.id === carcass.id);
-        if (idx !== -1) {
-          coldStockList[idx].currentWeight = newWeight;
-          coldStockList[idx].totalWeight = newWeight;
-          coldStockList[idx].lastUpdated = new Date().toISOString();
-          coldStockList[idx].usedInProcessing = true;
-          coldStockList[idx].usedForProduct = itemToProcess;
-          coldStockList[idx].weightUsed = weightUsed;
-          await AsyncStorage.setItem(
-            coldStockKey,
-            JSON.stringify(coldStockList),
-          );
-          carcassesUsedDetails.push({
-            id: carcass.id,
-            batchCode: carcass.batchCode,
-            type: carcass.type,
-            originalWeight: carcass.originalWeight,
-            weightUsed: weightUsed,
-            remainingWeight: newWeight,
-            amountPerPiece: carcass.amountPerPiece || null,
-            piecesProduced: carcass.piecesProduced || 1,
-          });
-        }
-      }
-    }
-    const batchCode = formatProcessingBatchCode(
-      itemToProcess,
-      processingBatchCounter,
-    );
-    const newBatchCounter = processingBatchCounter + 1;
-    setProcessingBatchCounter(newBatchCounter);
-    await saveProcessingBatchCounter(newBatchCounter);
-    const record = {
-      id: Date.now().toString(),
-      productName: itemToProcess,
-      packSize: packSize,
-      piecesPerPack: piecesPerPack,
-      totalPieces: totalPiecesProduced,
-      packedPieces: 0,
-      remainingPieces: totalPiecesProduced,
-      batchCode: batchCode,
-      recipeUsed: selectedRecipe?.name || null,
-      dryGoodsUsed: selectedDryGoods.map((dg) => ({
-        name: dg.label,
-        amount: selectedDryGoodsAmounts[dg.value] || 0,
-      })),
-      carcassesUsed: carcassesUsedDetails,
-      timestamp: new Date().toLocaleString(),
-      date: new Date().toISOString(),
-      status: "Ready for packing",
-    };
-    const stored = await AsyncStorage.getItem(PROCESSING_RECORDS_KEY);
-    let records = stored ? JSON.parse(stored) : [];
-    records.unshift(record);
-    await AsyncStorage.setItem(PROCESSING_RECORDS_KEY, JSON.stringify(records));
-    syncToFirebase(
-      "processingRecords",
-      record,
-      store.getState().settings.BusinessId,
-    );
-    const packsEquivalent = Math.floor(totalPiecesProduced / piecesPerPack);
-    const remainingPiecesTotal = totalPiecesProduced % piecesPerPack;
-    ToastAndroid.show(
-      `Processed: ${itemToProcess}\nTotal pieces: ${totalPiecesProduced}\nEquivalent packs: ${packsEquivalent} packs + ${remainingPiecesTotal} pieces\nBatch: ${batchCode}`,
-      ToastAndroid.LONG,
-    );
-    setItemToProcess("");
-    setSelectedDryGoods([]);
-    setSelectedDryGoodsAmounts({});
-    setSelectedCarcasses([]);
-    setProductionPieces(1);
-    setSelectedRecipe(null);
-    loadAllData();
 
-    Alert.alert(
-      "Processing Complete",
-      `Product: ${itemToProcess}\nTotal pieces: ${totalPiecesProduced}\nWhat would you like to do next?`,
-      [
-        {
-          text: "Go to Packing",
-          onPress: () => setDestinationScreen("packing"),
-        },
-        { text: "Continue Processing", style: "cancel" },
-      ],
-    );
+    setIsProcessing(true);
+
+    try {
+      const totalPiecesProduced =
+        selectedCarcasses.reduce(
+          (sum, c) => sum + (c.piecesProduced || 1),
+          0,
+        ) || 1;
+      const packSize = selectedRecipe?.packSize || 500;
+      const piecesPerPack = selectedRecipe?.piecesPerPack || 22;
+
+      const usedDryGoodsDetails = [];
+      const usedCarcassesDetails = [];
+
+      // Deduct from Dry Goods Store
+      for (const dg of selectedDryGoods) {
+        const used = selectedDryGoodsAmounts[dg.value] || 0;
+        if (used > 0) {
+          const dryStockKey = getStockKeyForStore("dry");
+          const dryStock = await AsyncStorage.getItem(dryStockKey);
+          let list = dryStock ? JSON.parse(dryStock) : [];
+          const idx = list.findIndex(
+            (d) => d.itemCode === dg.value || d.type === dg.value,
+          );
+          if (idx !== -1) {
+            const item = list[idx];
+            const remaining = item.totalWeight - used;
+
+            usedDryGoodsDetails.push({
+              id: item.id,
+              itemCode: item.itemCode,
+              description: item.description || item.type,
+              unit: item.unit || "KG",
+              amountUsed: used,
+              remainingWeight: remaining,
+              batchNumber: item.batchNumber,
+              bomType: item.bomType,
+              productMade: itemToProcess,
+              timestamp: new Date().toISOString(),
+            });
+
+            if (remaining <= 0) {
+              list.splice(idx, 1);
+            } else {
+              list[idx].totalWeight = remaining;
+              list[idx].lastUpdated = new Date().toISOString();
+            }
+            await AsyncStorage.setItem(dryStockKey, JSON.stringify(list));
+
+            const businessId = store.getState().settings.BusinessId;
+            for (const item of list) {
+              syncToFirebase("dry_goods_stock", item, businessId);
+            }
+          }
+        }
+      }
+
+      // Deduct from Coldroom (Carcasses)
+      const carcassesUsedDetails = [];
+      for (const carcass of selectedCarcasses) {
+        const weightUsed = carcass.weightToUse;
+        if (weightUsed > 0) {
+          const coldStockKey = getStockKeyForStore("cold");
+          const coldStock = await AsyncStorage.getItem(coldStockKey);
+          let coldStockList = coldStock ? JSON.parse(coldStock) : [];
+          const idx = coldStockList.findIndex((c) => c.id === carcass.id);
+          if (idx !== -1) {
+            const item = coldStockList[idx];
+            const remainingWeight = item.currentWeight - weightUsed;
+
+            usedCarcassesDetails.push({
+              id: item.id,
+              type: item.type,
+              batchCode: item.batchCode,
+              weightUsed: weightUsed,
+              remainingWeight: remainingWeight,
+              originalWeight: item.weightAfterDebonning || item.totalWeight,
+              productMade: itemToProcess,
+              timestamp: new Date().toISOString(),
+            });
+
+            coldStockList[idx].currentWeight = remainingWeight;
+            coldStockList[idx].totalWeight = remainingWeight;
+            coldStockList[idx].lastUpdated = new Date().toISOString();
+            coldStockList[idx].usedInProcessing = true;
+            coldStockList[idx].usedForProduct = itemToProcess;
+            coldStockList[idx].weightUsed = weightUsed;
+
+            if (remainingWeight <= 0) {
+              coldStockList.splice(idx, 1);
+            }
+            await AsyncStorage.setItem(
+              coldStockKey,
+              JSON.stringify(coldStockList),
+            );
+
+            const businessId = store.getState().settings.BusinessId;
+            for (const item of coldStockList) {
+              syncToFirebase("cold_room_stock", item, businessId);
+            }
+
+            carcassesUsedDetails.push({
+              id: carcass.id,
+              batchCode: carcass.batchCode,
+              type: carcass.type,
+              originalWeight: carcass.originalWeight,
+              weightUsed: weightUsed,
+              remainingWeight: remainingWeight,
+              amountPerPiece: carcass.amountPerPiece || null,
+              piecesProduced: carcass.piecesProduced || 1,
+            });
+          }
+        }
+      }
+
+      // Save used stock records
+      const usedStockRecord = {
+        id: Date.now().toString(),
+        productName: itemToProcess,
+        batchCode: formatProcessingBatchCode(
+          itemToProcess,
+          processingBatchCounter,
+        ),
+        dryGoodsUsed: usedDryGoodsDetails,
+        carcassesUsed: usedCarcassesDetails,
+        totalPieces: totalPiecesProduced,
+        timestamp: new Date().toISOString(),
+        date: new Date().toLocaleString(),
+      };
+      await saveUsedStockRecord(usedStockRecord);
+
+      const batchCode = formatProcessingBatchCode(
+        itemToProcess,
+        processingBatchCounter,
+      );
+      const newBatchCounter = processingBatchCounter + 1;
+      setProcessingBatchCounter(newBatchCounter);
+      await saveProcessingBatchCounter(newBatchCounter);
+
+      const record = {
+        id: Date.now().toString(),
+        productName: itemToProcess,
+        packSize: packSize,
+        piecesPerPack: piecesPerPack,
+        totalPieces: totalPiecesProduced,
+        packedPieces: 0,
+        remainingPieces: totalPiecesProduced,
+        batchCode: batchCode,
+        recipeUsed: selectedRecipe?.name || null,
+        dryGoodsUsed: selectedDryGoods.map((dg) => ({
+          name: dg.displayName || dg.label,
+          amount: selectedDryGoodsAmounts[dg.value] || 0,
+        })),
+        carcassesUsed: carcassesUsedDetails,
+        timestamp: new Date().toLocaleString(),
+        date: new Date().toISOString(),
+        status: "Ready for packing",
+      };
+
+      const stored = await AsyncStorage.getItem(PROCESSING_RECORDS_KEY);
+      let records = stored ? JSON.parse(stored) : [];
+      records.unshift(record);
+      await AsyncStorage.setItem(
+        PROCESSING_RECORDS_KEY,
+        JSON.stringify(records),
+      );
+      syncToFirebase(
+        "processingRecords",
+        record,
+        store.getState().settings.BusinessId,
+      );
+
+      const packsEquivalent = Math.floor(totalPiecesProduced / piecesPerPack);
+      const remainingPiecesTotal = totalPiecesProduced % piecesPerPack;
+
+      ToastAndroid.show(
+        `✅ Processed: ${itemToProcess}\n${totalPiecesProduced} pieces = ${packsEquivalent} packs + ${remainingPiecesTotal} pieces\nBatch: ${batchCode}`,
+        ToastAndroid.LONG,
+      );
+
+      setItemToProcess("");
+      setSelectedDryGoods([]);
+      setSelectedDryGoodsAmounts({});
+      setSelectedCarcasses([]);
+      setProductionPieces(1);
+      setSelectedRecipe(null);
+
+      await loadAllData();
+
+      Alert.alert(
+        "✅ Processing Complete!",
+        `Product: ${itemToProcess}\nTotal pieces: ${totalPiecesProduced}\nEquivalent packs: ${packsEquivalent} packs + ${remainingPiecesTotal} pieces\nBatch: ${batchCode}\n\nWhat would you like to do next?`,
+        [
+          {
+            text: "📦 Go to Packing",
+            onPress: () => setDestinationScreen("packing"),
+          },
+          { text: "🔄 Continue Processing", style: "cancel" },
+        ],
+      );
+    } catch (error) {
+      console.error("Processing error:", error);
+      ToastAndroid.show(
+        "Error processing. Please try again.",
+        ToastAndroid.SHORT,
+      );
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const onRefresh = async () => {
@@ -2412,8 +2893,6 @@ const ProcessingScreen = ({ onClose }) => {
   };
 
   const renderRecipeItem = ({ item }) => {
-    const missingIngredients = missingIngredientsWarnings[item.id] || [];
-    const hasMissingIngredients = missingIngredients.length > 0;
     return (
       <View
         style={[
@@ -2437,49 +2916,17 @@ const ProcessingScreen = ({ onClose }) => {
             <Text style={styles.stockInfo}>
               {item.items.length} ingredients
             </Text>
-            {item.items.slice(0, 2).map((ing, idx) => (
+            {item.items.slice(0, 3).map((ing, idx) => (
               <Text key={idx} style={styles.stockInfo}>
-                • {ing.itemName}: {ing.amountPerPiece.toFixed(6)} kg
+                • {ing.itemName}: {ing.amountPerPiece.toFixed(6)} kg/piece
               </Text>
             ))}
-            <Text style={styles.stockDate}>Created: {item.createdAt}</Text>
-            {hasMissingIngredients && (
-              <View
-                style={[
-                  styles.recipeSummary,
-                  { backgroundColor: "#FFE0E0", marginTop: 8 },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.stockInfo,
-                    { color: "#CC0000", fontWeight: "bold" },
-                  ]}
-                >
-                  ⚠️ Missing Ingredients:
-                </Text>
-                {missingIngredients.map((missing, idx) => (
-                  <Text
-                    key={idx}
-                    style={[
-                      styles.stockInfo,
-                      { color: "#CC0000", marginLeft: 8 },
-                    ]}
-                  >
-                    • {missing.name}: Need {missing.neededPerPiece.toFixed(6)}{" "}
-                    kg/piece, Available: {missing.available.toFixed(6)} kg
-                  </Text>
-                ))}
-                <Text
-                  style={[
-                    styles.stockInfo,
-                    { color: "#CC0000", marginTop: 4, fontSize: 12 },
-                  ]}
-                >
-                  Please add these ingredients to stock before processing.
-                </Text>
-              </View>
+            {item.items.length > 3 && (
+              <Text style={styles.stockInfo}>
+                • ... and {item.items.length - 3} more
+              </Text>
             )}
+            <Text style={styles.stockDate}>Created: {item.createdAt}</Text>
           </View>
         </TouchableOpacity>
         <View style={{ flexDirection: "row", marginTop: 8 }}>
@@ -2490,7 +2937,7 @@ const ProcessingScreen = ({ onClose }) => {
             ]}
             onPress={() => useRecipe(item)}
           >
-            <Text style={styles.removeButtonText}>Use</Text>
+            <Text style={styles.removeButtonText}>Use Recipe</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[
@@ -2512,7 +2959,14 @@ const ProcessingScreen = ({ onClose }) => {
   const renderDryGoodsItem = ({ item }) => (
     <View style={styles.stockItem}>
       <View style={styles.stockDetails}>
-        <Text style={styles.stockType}>{item.label}</Text>
+        <Text style={styles.stockType}>{item.displayName || item.label}</Text>
+        {item.description && (
+          <Text style={styles.stockInfo}>Description: {item.description}</Text>
+        )}
+        {item.unit && <Text style={styles.stockInfo}>Unit: {item.unit}</Text>}
+        <Text style={styles.stockInfo}>
+          Available: {item.totalWeight?.toFixed(3) || "0.000"} kg
+        </Text>
       </View>
       <TouchableOpacity
         style={[styles.removeButton, { backgroundColor: "#0066CC" }]}
@@ -2526,7 +2980,7 @@ const ProcessingScreen = ({ onClose }) => {
   const renderSelectedDryGoodsItem = ({ item }) => (
     <View style={[styles.stockItem, { backgroundColor: "#E8F4FD" }]}>
       <View style={styles.stockDetails}>
-        <Text style={styles.stockType}>{item.label}</Text>
+        <Text style={styles.stockType}>{item.displayName || item.label}</Text>
         <TextInput
           style={[styles.inputField, { marginTop: 5, height: 40 }]}
           placeholder="Amount (kg)"
@@ -2674,6 +3128,11 @@ const ProcessingScreen = ({ onClose }) => {
     const maxPieces = requirements
       ? calculateMaxPiecesFromStock(requirements)
       : 0;
+    const missingItems = requirements
+      ? checkStockAvailability(requirements)
+      : [];
+    const isFullyAvailable = missingItems.length === 0;
+
     return (
       <ScrollView
         style={{ flex: 1, backgroundColor: "#F9F9F9" }}
@@ -2686,6 +3145,7 @@ const ProcessingScreen = ({ onClose }) => {
               setIsBulkMode(false);
               setSelectedRecipe(null);
               setProductionPieces(1);
+              setStockCheckResult(null);
             }}
           >
             <Text style={styles.backButtonText}>← Back</Text>
@@ -2712,69 +3172,114 @@ const ProcessingScreen = ({ onClose }) => {
               </Text>
             ))}
           </View>
+
+          <Text style={styles.sectionHeader}>Production Quantity</Text>
           <TextInput
             style={styles.inputField}
             placeholder="Number of pieces to produce"
             keyboardType="numeric"
             value={productionPieces.toString()}
-            onChangeText={(text) => setProductionPieces(parseInt(text) || 1)}
+            onChangeText={(text) => {
+              const val = parseInt(text) || 1;
+              setProductionPieces(val);
+              if (selectedRecipe) {
+                const result = checkStockForQuantity(val);
+                setStockCheckResult(result);
+              }
+            }}
           />
-          {maxPieces > 0 && productionPieces > maxPieces && (
-            <View
-              style={[styles.recipeSummary, { backgroundColor: "#FFE0E0" }]}
-            >
-              <Text style={[styles.stockInfo, { color: "#FF0000" }]}>
-                Warning: Only {maxPieces} pieces possible from current stock
-              </Text>
-            </View>
-          )}
+
           {requirements && (
-            <View style={styles.recipeSummary}>
-              <Text style={styles.recordsHeader}>
-                Total Required for {productionPieces} pieces:
+            <View
+              style={[
+                styles.recipeSummary,
+                { backgroundColor: isFullyAvailable ? "#E8F5E9" : "#FFEBEE" },
+              ]}
+            >
+              <Text
+                style={[
+                  styles.recordsHeader,
+                  { color: isFullyAvailable ? "#2E7D32" : "#C62828" },
+                ]}
+              >
+                {isFullyAvailable
+                  ? "✅ All Ingredients Available!"
+                  : "❌ Insufficient Stock"}
               </Text>
-              {requirements.dryGoods.map((item, idx) => {
-                const stockItem = dryGoodsStock.find(
-                  (s) => s.type === item.itemId,
-                );
-                const hasStock =
-                  stockItem && stockItem.totalWeight >= item.totalAmount;
-                return (
+              <Text style={styles.stockInfo}>
+                Requested: {productionPieces} pieces
+              </Text>
+              <Text style={styles.stockInfo}>
+                Maximum possible: {maxPieces} pieces
+              </Text>
+              {maxPieces > 0 && (
+                <Text style={styles.stockInfo}>
+                  Max packs:{" "}
+                  {Math.floor(maxPieces / selectedRecipe.piecesPerPack)} packs +{" "}
+                  {maxPieces % selectedRecipe.piecesPerPack} pieces
+                </Text>
+              )}
+
+              {missingItems.length > 0 && (
+                <>
                   <Text
-                    key={idx}
                     style={[
                       styles.stockInfo,
-                      { color: hasStock ? "#333" : "#FF0000" },
+                      { fontWeight: "bold", marginTop: 8, color: "#C62828" },
                     ]}
                   >
-                    📦 {item.itemName}: {item.totalAmount.toFixed(6)} kg{" "}
-                    {!hasStock &&
-                      `(Only ${stockItem?.totalWeight.toFixed(6) || 0} kg available)`}
+                    ⚠️ Missing Ingredients - Please Refill:
                   </Text>
-                );
-              })}
-              {requirements.carcasses.map((item, idx) => {
-                const carcassItem = carcassItems.find(
-                  (c) => c.id === item.itemId,
-                );
-                const hasStock =
-                  carcassItem && carcassItem.currentWeight >= item.totalAmount;
-                return (
-                  <Text
-                    key={idx}
-                    style={[
-                      styles.stockInfo,
-                      { color: hasStock ? "#333" : "#FF0000" },
-                    ]}
-                  >
-                    🥩 {item.itemName}: {item.totalAmount.toFixed(6)} kg{" "}
-                    {!hasStock &&
-                      `(Only ${carcassItem?.currentWeight.toFixed(6) || 0} kg available)`}
-                  </Text>
-                );
-              })}
+                  {missingItems.map((item, idx) => (
+                    <View
+                      key={idx}
+                      style={{
+                        backgroundColor: "#FFCDD2",
+                        padding: 8,
+                        borderRadius: 4,
+                        marginTop: 4,
+                      }}
+                    >
+                      <Text style={[styles.stockInfo, { color: "#B71C1C" }]}>
+                        • {item.name}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.stockInfo,
+                          { color: "#B71C1C", marginLeft: 8 },
+                        ]}
+                      >
+                        Need: {item.needed.toFixed(3)} {item.unit} | Have:{" "}
+                        {item.available.toFixed(3)} {item.unit}
+                      </Text>
+                      <Text
+                        style={[
+                          styles.stockInfo,
+                          {
+                            color: "#D32F2F",
+                            fontWeight: "bold",
+                            marginLeft: 8,
+                          },
+                        ]}
+                      >
+                        → Refill: {(item.needed - item.available).toFixed(3)}{" "}
+                        {item.unit}
+                      </Text>
+                    </View>
+                  ))}
+                </>
+              )}
+
+              {isFullyAvailable && (
+                <Text
+                  style={[styles.stockInfo, { color: "#2E7D32", marginTop: 8 }]}
+                >
+                  ✅ All ingredients available for {productionPieces} pieces!
+                </Text>
+              )}
             </View>
           )}
+
           {productionPieces > 0 && (
             <View style={styles.recipeSummary}>
               <Text style={styles.recordsHeader}>Production Output:</Text>
@@ -2788,9 +3293,37 @@ const ProcessingScreen = ({ onClose }) => {
               </Text>
             </View>
           )}
-          <TouchableOpacity style={styles.saveButton} onPress={applyRecipe}>
-            <Text style={styles.saveButtonText}>Apply Recipe</Text>
+
+          <TouchableOpacity
+            style={[
+              styles.saveButton,
+              { backgroundColor: isFullyAvailable ? "#4CAF50" : "#FF9800" },
+            ]}
+            onPress={applyRecipe}
+          >
+            <Text style={styles.saveButtonText}>
+              {isFullyAvailable
+                ? "✅ Apply Recipe"
+                : "⚠️ Apply with Available Stock"}
+            </Text>
           </TouchableOpacity>
+
+          {!isFullyAvailable && maxPieces > 0 && (
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                { backgroundColor: "#2196F3", marginTop: 10 },
+              ]}
+              onPress={() => {
+                setProductionPieces(maxPieces);
+                setTimeout(() => applyRecipeWithMax(maxPieces), 100);
+              }}
+            >
+              <Text style={styles.saveButtonText}>
+                Use Max ({maxPieces} pieces)
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </ScrollView>
     );
@@ -2816,6 +3349,27 @@ const ProcessingScreen = ({ onClose }) => {
         <TouchableOpacity style={styles.refreshButtonSmall} onPress={onRefresh}>
           <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
         </TouchableOpacity>
+
+        {isProcessing && (
+          <View
+            style={[
+              styles.recipeSummary,
+              {
+                backgroundColor: "#FFF3E0",
+                flexDirection: "row",
+                alignItems: "center",
+              },
+            ]}
+          >
+            <ActivityIndicator size="small" color="#FF9800" />
+            <Text
+              style={[styles.stockInfo, { color: "#FF9800", marginLeft: 8 }]}
+            >
+              ⏳ Processing... Please wait
+            </Text>
+          </View>
+        )}
+
         <View style={styles.recipeSection}>
           <View style={styles.recipeHeader}>
             <Text style={styles.sectionHeader}>Product Recipes</Text>
@@ -2930,9 +3484,124 @@ const ProcessingScreen = ({ onClose }) => {
             />
           </>
         )}
-        <TouchableOpacity style={styles.saveButton} onPress={handleProcess}>
-          <Text style={styles.saveButtonText}>Record Processing</Text>
+        <TouchableOpacity
+          style={[
+            styles.saveButton,
+            isProcessing && { backgroundColor: "#999" },
+          ]}
+          onPress={handleProcess}
+          disabled={isProcessing}
+        >
+          <Text style={styles.saveButtonText}>
+            {isProcessing ? "⏳ Processing..." : "📝 Record Processing"}
+          </Text>
         </TouchableOpacity>
+
+        {/* Used Stock Records */}
+        <Text style={styles.recordsHeader}>
+          📊 Used Stock Records ({usedStockRecords.length})
+        </Text>
+        <FlatList
+          data={usedStockRecords.slice(0, 10)}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item }) => (
+            <View
+              style={[
+                styles.stockItem,
+                {
+                  backgroundColor: "#FFF8E1",
+                  flexDirection: "column",
+                  alignItems: "stretch",
+                },
+              ]}
+            >
+              <View style={styles.stockDetails}>
+                <Text style={styles.stockType}>
+                  Product: {item.productName}
+                </Text>
+                <Text style={styles.stockInfo}>Batch: {item.batchCode}</Text>
+                <Text style={styles.stockInfo}>
+                  Total Pieces: {item.totalPieces}
+                </Text>
+                <Text style={styles.stockInfo}>Date: {item.date}</Text>
+                {item.dryGoodsUsed && item.dryGoodsUsed.length > 0 && (
+                  <>
+                    <Text
+                      style={[
+                        styles.stockInfo,
+                        { fontWeight: "bold", marginTop: 4, color: "#0066CC" },
+                      ]}
+                    >
+                      📦 Dry Goods Used:
+                    </Text>
+                    {item.dryGoodsUsed.slice(0, 3).map((d, idx) => (
+                      <Text
+                        key={idx}
+                        style={[
+                          styles.stockInfo,
+                          { marginLeft: 8, fontSize: 11 },
+                        ]}
+                      >
+                        • {d.description || d.itemCode}:{" "}
+                        {d.amountUsed.toFixed(3)} kg used, Remaining:{" "}
+                        {d.remainingWeight.toFixed(3)} kg
+                      </Text>
+                    ))}
+                    {item.dryGoodsUsed.length > 3 && (
+                      <Text
+                        style={[
+                          styles.stockInfo,
+                          { marginLeft: 8, fontSize: 10, color: "#888" },
+                        ]}
+                      >
+                        ... and {item.dryGoodsUsed.length - 3} more
+                      </Text>
+                    )}
+                  </>
+                )}
+                {item.carcassesUsed && item.carcassesUsed.length > 0 && (
+                  <>
+                    <Text
+                      style={[
+                        styles.stockInfo,
+                        { fontWeight: "bold", marginTop: 4, color: "#FF6F00" },
+                      ]}
+                    >
+                      🥩 Carcasses Used:
+                    </Text>
+                    {item.carcassesUsed.slice(0, 3).map((c, idx) => (
+                      <Text
+                        key={idx}
+                        style={[
+                          styles.stockInfo,
+                          { marginLeft: 8, fontSize: 11 },
+                        ]}
+                      >
+                        • {c.type || "Carcass"}: {c.weightUsed.toFixed(3)} kg
+                        used, Remaining: {c.remainingWeight.toFixed(3)} kg
+                      </Text>
+                    ))}
+                    {item.carcassesUsed.length > 3 && (
+                      <Text
+                        style={[
+                          styles.stockInfo,
+                          { marginLeft: 8, fontSize: 10, color: "#888" },
+                        ]}
+                      >
+                        ... and {item.carcassesUsed.length - 3} more
+                      </Text>
+                    )}
+                  </>
+                )}
+              </View>
+            </View>
+          )}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No used stock records yet</Text>
+          }
+          scrollEnabled={false}
+        />
+
         <Text style={styles.recordsHeader}>
           Processing History ({processingRecords.length})
         </Text>
@@ -3572,6 +4241,12 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
   const [spoilageRemovals, setSpoilageRemovals] = useState([]);
   const [filteredSpoilage, setFilteredSpoilage] = useState([]);
   const [spoilageSearchText, setSpoilageSearchText] = useState("");
+  const [removalModalVisible, setRemovalModalVisible] = useState(false);
+  const [selectedRemovalItem, setSelectedRemovalItem] = useState(null);
+  const [removeWeight, setRemoveWeight] = useState("");
+  const [removalReason, setRemovalReason] = useState("");
+  const [decisionModalVisible, setDecisionModalVisible] = useState(false);
+  const [capturedWeightData, setCapturedWeightData] = useState(null);
 
   useEffect(() => {
     loadCarcassBatches();
@@ -3736,18 +4411,183 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
         newBatch,
         store.getState().settings.BusinessId,
       );
-      ToastAndroid.show(
-        `Weight before captured: ${currentWeight.toFixed(3)} kg`,
-        ToastAndroid.SHORT,
-      );
+
+      try {
+        const weightBeforeStored = await AsyncStorage.getItem(
+          WEIGHT_BEFORE_DEBONNING_KEY,
+        );
+        let weightBeforeList = weightBeforeStored
+          ? JSON.parse(weightBeforeStored)
+          : [];
+        const index = weightBeforeList.findIndex(
+          (item) =>
+            item.batchCode === selectedBatch.batchCode &&
+            item.status === "pending",
+        );
+        if (index !== -1) {
+          weightBeforeList[index].weightBefore = currentWeight;
+          weightBeforeList[index].status = "weighed";
+          weightBeforeList[index].dateWeighed = new Date().toLocaleString();
+          await AsyncStorage.setItem(
+            WEIGHT_BEFORE_DEBONNING_KEY,
+            JSON.stringify(weightBeforeList),
+          );
+        }
+      } catch (error) {
+        console.error("Failed to update weight before record:", error);
+      }
+
+      setCapturedWeightData({
+        weight: currentWeight,
+        batch: selectedBatch,
+        newBatch: newBatch,
+      });
+
       setIsWeighing(false);
-      setSelectedBatch(null);
-      setCurrentWeight(null);
-      loadCarcassBatches();
-      if (onBatchCreated) onBatchCreated();
+      setDecisionModalVisible(true);
     } catch (error) {
       console.error("Failed to save butchery batch", error);
       ToastAndroid.show("Error saving batch", ToastAndroid.SHORT);
+    }
+  };
+
+  const handleDecision = async (destination) => {
+    setDecisionModalVisible(false);
+
+    if (destination === "packing") {
+      ToastAndroid.show("🔄 Opening Packing section...", ToastAndroid.SHORT);
+      if (onBatchCreated) {
+        onBatchCreated("packing");
+      }
+    } else if (destination === "processing") {
+      ToastAndroid.show("🔄 Opening Processing section...", ToastAndroid.SHORT);
+      if (onBatchCreated) {
+        onBatchCreated("processing");
+      }
+    } else {
+      ToastAndroid.show(
+        `✅ Weight captured: ${capturedWeightData?.weight?.toFixed(3)} kg`,
+        ToastAndroid.SHORT,
+      );
+      setSelectedBatch(null);
+      setCurrentWeight(null);
+      loadCarcassBatches();
+    }
+  };
+
+  const handleRemoveBefore = (item) => {
+    setSelectedRemovalItem(item);
+    setRemoveWeight("");
+    setRemovalReason("");
+    setRemovalModalVisible(true);
+  };
+
+  const confirmRemovalBefore = async () => {
+    const weightToRemove = parseFloat(removeWeight);
+    if (isNaN(weightToRemove) || weightToRemove <= 0) {
+      ToastAndroid.show("Please enter a valid weight (kg)", ToastAndroid.SHORT);
+      return;
+    }
+    if (weightToRemove > selectedRemovalItem.currentWeight) {
+      ToastAndroid.show("Not enough stock", ToastAndroid.SHORT);
+      return;
+    }
+    const reason = removalReason.trim();
+    if (reason === "") {
+      ToastAndroid.show(
+        "Please enter a reason for removal",
+        ToastAndroid.SHORT,
+      );
+      return;
+    }
+
+    try {
+      const coldStockKey = getStockKeyForStore("cold");
+      const coldStock = await AsyncStorage.getItem(coldStockKey);
+      let coldStockList = coldStock ? JSON.parse(coldStock) : [];
+
+      const idx = coldStockList.findIndex(
+        (item) =>
+          item.batchCode === selectedRemovalItem.batchCode && !item.isDebonned,
+      );
+
+      if (idx !== -1) {
+        const newWeight = coldStockList[idx].totalWeight - weightToRemove;
+        coldStockList[idx].totalWeight = newWeight;
+        coldStockList[idx].lastUpdated = new Date().toISOString();
+        coldStockList[idx].removalReason = reason;
+        if (newWeight <= 0) {
+          coldStockList.splice(idx, 1);
+        }
+        await AsyncStorage.setItem(coldStockKey, JSON.stringify(coldStockList));
+
+        const businessId = store.getState().settings.BusinessId;
+        for (const item of coldStockList) {
+          await syncToFirebase("cold_room_stock", item, businessId);
+        }
+
+        const spoilageRecord = {
+          id: Date.now().toString(),
+          batchCode: selectedRemovalItem.batchCode,
+          carcassType: selectedRemovalItem.carcassType,
+          receivedWeight:
+            selectedRemovalItem.originalReceivedWeight ||
+            selectedRemovalItem.totalWeight,
+          currentWeight: newWeight,
+          pieces: selectedRemovalItem.totalPieces || 1,
+          weightRemoved: weightToRemove,
+          reason: reason,
+          date: new Date().toLocaleString(),
+          removedFrom: "Weight Before Debonning",
+        };
+
+        const spoilageStored = await AsyncStorage.getItem(
+          SPOILAGE_REMOVALS_KEY,
+        );
+        let spoilageList = spoilageStored ? JSON.parse(spoilageStored) : [];
+        spoilageList.unshift(spoilageRecord);
+        await AsyncStorage.setItem(
+          SPOILAGE_REMOVALS_KEY,
+          JSON.stringify(spoilageList),
+        );
+        syncToFirebase("spoilageRecords", spoilageRecord, businessId);
+
+        const removalRecord = {
+          id: Date.now().toString(),
+          store: "cold",
+          itemId: selectedRemovalItem.id,
+          type: selectedRemovalItem.carcassType,
+          weightRemoved: weightToRemove,
+          batchCode: selectedRemovalItem.batchCode || "",
+          reason: reason,
+          date: new Date().toLocaleString(),
+          isCarcass: true,
+          isColdroom: true,
+          isDebonned: false,
+          remainingWeight: newWeight,
+          removedFrom: "Weight Before Debonning",
+        };
+
+        let removalsList = await AsyncStorage.getItem(REMOVALS_KEY);
+        removalsList = removalsList ? JSON.parse(removalsList) : [];
+        removalsList.unshift(removalRecord);
+        await AsyncStorage.setItem(REMOVALS_KEY, JSON.stringify(removalsList));
+        syncToFirebase("stockRemovals", removalRecord, businessId);
+
+        ToastAndroid.show(
+          `Removed ${weightToRemove.toFixed(3)} kg from ${selectedRemovalItem.carcassType}`,
+          ToastAndroid.LONG,
+        );
+
+        setRemovalModalVisible(false);
+        setSelectedRemovalItem(null);
+        setRemoveWeight("");
+        setRemovalReason("");
+        onRefresh();
+      }
+    } catch (error) {
+      console.error("Failed to remove stock:", error);
+      ToastAndroid.show("Error removing stock", ToastAndroid.SHORT);
     }
   };
 
@@ -3761,8 +4601,8 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
           {item.totalWeight ? item.totalWeight.toFixed(3) : "0.000"} kg
         </Text>
         <Text style={styles.stockInfo}>
-          Current Weight:{" "}
-          {item.currentWeight ? item.currentWeight.toFixed(3) : "0.000"} kg
+          Weight Before Debonning:{" "}
+          {item.weightBefore ? item.weightBefore.toFixed(3) : "0.000"} kg
         </Text>
         {item.spoilageRemoved > 0 && (
           <Text style={[styles.stockInfo, { color: "#FF4444" }]}>
@@ -3772,12 +4612,23 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
         <Text style={styles.stockInfo}>{item.totalPieces} pieces</Text>
         <Text style={styles.stockDate}>Date: {item.date}</Text>
       </View>
-      <TouchableOpacity
-        style={[styles.removeButton, { backgroundColor: "#0066CC" }]}
-        onPress={() => startWeighing(item)}
-      >
-        <Text style={styles.removeButtonText}>Weigh Before Debonning</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: "column", gap: 5 }}>
+        <TouchableOpacity
+          style={[
+            styles.removeButton,
+            { backgroundColor: "#0066CC", marginBottom: 5 },
+          ]}
+          onPress={() => startWeighing(item)}
+        >
+          <Text style={styles.removeButtonText}>Weigh Before</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.removeButton, { backgroundColor: "#FF4444" }]}
+          onPress={() => handleRemoveBefore(item)}
+        >
+          <Text style={styles.removeButtonText}>Remove</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -3803,9 +4654,9 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
           kg
         </Text>
         <Text style={styles.sessionInfo}>
-          Current Weight:{" "}
-          {selectedBatch?.currentWeight
-            ? selectedBatch.currentWeight.toFixed(3)
+          Weight Before Debonning:{" "}
+          {selectedBatch?.weightBefore
+            ? selectedBatch.weightBefore.toFixed(3)
             : "0.000"}{" "}
           kg
         </Text>
@@ -3859,85 +4710,252 @@ const WeightBeforeScreen = ({ onClose, onBatchCreated }) => {
   }
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: "#F9F9F9" }}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }
-    >
-      <View style={styles.dryGoodsContainer}>
-        <TouchableOpacity style={styles.backButton} onPress={onClose}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.dryGoodsTitle}>Weight Before Debonning</Text>
-        <TouchableOpacity style={styles.refreshButtonSmall} onPress={onRefresh}>
-          <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
-        </TouchableOpacity>
-        <Text style={styles.sectionHeader}>Available Carcass Batches</Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by last 3 digits of batch no..."
-          value={searchText}
-          onChangeText={setSearchText}
-        />
-        <FlatList
-          data={filteredBatches}
-          keyExtractor={(item) => item.id}
-          renderItem={renderBatchItem}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No available carcass batches</Text>
-          }
-          scrollEnabled={false}
-        />
-        <Text style={styles.recordsHeader}>Spoilage Removal Records</Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by last 3 digits of batch no..."
-          value={spoilageSearchText}
-          onChangeText={setSpoilageSearchText}
-        />
-        <FlatList
-          data={filteredSpoilage}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <View
-              style={[styles.deletedRecordItem, { backgroundColor: "#FFF3E0" }]}
-            >
-              <View style={styles.deletedRecordDetails}>
-                <Text style={styles.deletedRecordType}>
-                  Carcass Type: {item.carcassType || "N/A"}
+    <>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#F9F9F9" }}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        <View style={styles.dryGoodsContainer}>
+          <TouchableOpacity style={styles.backButton} onPress={onClose}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.dryGoodsTitle}>Weight Before Debonning</Text>
+          <TouchableOpacity
+            style={styles.refreshButtonSmall}
+            onPress={onRefresh}
+          >
+            <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
+          </TouchableOpacity>
+          <Text style={styles.sectionHeader}>Available Carcass Batches</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by last 3 digits of batch no..."
+            value={searchText}
+            onChangeText={setSearchText}
+          />
+          <FlatList
+            data={filteredBatches}
+            keyExtractor={(item) => item.id}
+            renderItem={renderBatchItem}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No available carcass batches</Text>
+            }
+            scrollEnabled={false}
+          />
+          <Text style={styles.recordsHeader}>Spoilage Removal Records</Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by last 3 digits of batch no..."
+            value={spoilageSearchText}
+            onChangeText={setSpoilageSearchText}
+          />
+          <FlatList
+            data={filteredSpoilage}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <View
+                style={[
+                  styles.deletedRecordItem,
+                  { backgroundColor: "#FFF3E0" },
+                ]}
+              >
+                <View style={styles.deletedRecordDetails}>
+                  <Text style={styles.deletedRecordType}>
+                    Carcass Type: {item.carcassType || "N/A"}
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Batch No: {item.batchCode}
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Received Weight: {item.receivedWeight.toFixed(3)} kg
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Weight Before Debonning:{" "}
+                    {item.weightBefore?.toFixed(3) || "0.000"} kg
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Pieces: {item.pieces}
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Removed Weight: {item.weightRemoved.toFixed(3)} kg
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Reason: {item.reason}
+                  </Text>
+                  <Text style={styles.deletedRecordDate}>
+                    Date & Time: {item.date}
+                  </Text>
+                  {item.removedFrom && (
+                    <Text
+                      style={[styles.deletedRecordInfo, { color: "#0066CC" }]}
+                    >
+                      Removed from: {item.removedFrom}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            )}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No spoilage removal records</Text>
+            }
+            scrollEnabled={false}
+          />
+        </View>
+
+        <Modal
+          animationType="slide"
+          transparent
+          visible={removalModalVisible}
+          onRequestClose={() => setRemovalModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>
+                Remove Stock (Before Debonning)
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Item: {selectedRemovalItem?.carcassType}
+              </Text>
+              {selectedRemovalItem?.batchCode && (
+                <Text style={styles.modalSubtitle}>
+                  Batch: {selectedRemovalItem.batchCode}
                 </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Batch No: {item.batchCode}
-                </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Received Weight: {item.receivedWeight.toFixed(3)} kg
-                </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Current Weight: {item.currentWeight.toFixed(3)} kg
-                </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Pieces: {item.pieces}
-                </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Removed Weight: {item.weightRemoved.toFixed(3)} kg
-                </Text>
-                <Text style={styles.deletedRecordInfo}>
-                  Reason: {item.reason}
-                </Text>
-                <Text style={styles.deletedRecordDate}>
-                  Date & Time: {item.date}
-                </Text>
+              )}
+              <Text style={styles.modalSubtitle}>
+                Received Weight:{" "}
+                {selectedRemovalItem?.originalReceivedWeight?.toFixed(3) ||
+                  "0.000"}{" "}
+                kg
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Weight Before Debonning:{" "}
+                {selectedRemovalItem?.weightBefore?.toFixed(3) || "0.000"} kg
+              </Text>
+              <TextInput
+                style={styles.inputField}
+                placeholder="Weight to remove (kg)"
+                value={removeWeight}
+                onChangeText={setRemoveWeight}
+                keyboardType="decimal-pad"
+              />
+              <TextInput
+                style={styles.inputField}
+                placeholder="Reason for removal (required)"
+                value={removalReason}
+                onChangeText={setRemovalReason}
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#FF4444" }]}
+                  onPress={confirmRemovalBefore}
+                >
+                  <Text style={styles.modalButtonText}>Confirm Removal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#888" }]}
+                  onPress={() => setRemovalModalVisible(false)}
+                >
+                  <Text style={styles.modalButtonText}>Cancel</Text>
+                </TouchableOpacity>
               </View>
             </View>
-          )}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No spoilage removal records</Text>
-          }
-          scrollEnabled={false}
-        />
-      </View>
-    </ScrollView>
+          </View>
+        </Modal>
+
+        <Modal
+          animationType="slide"
+          transparent={true}
+          visible={decisionModalVisible}
+          onRequestClose={() => setDecisionModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View
+              style={[
+                styles.modalContent,
+                { width: "90%", backgroundColor: "#1a1a2e" },
+              ]}
+            >
+              <Text
+                style={[styles.modalTitle, { color: "#4CAF50", fontSize: 22 }]}
+              >
+                ✅ Weight Captured!
+              </Text>
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 12,
+                }}
+              />
+              <Text style={[styles.modalSubtitle, { color: "#fff" }]}>
+                Weight: {capturedWeightData?.weight?.toFixed(3)} kg
+              </Text>
+              <Text style={[styles.modalSubtitle, { color: "#aaa" }]}>
+                Batch: {capturedWeightData?.batch?.batchCode}
+              </Text>
+              <Text style={[styles.modalSubtitle, { color: "#aaa" }]}>
+                Carcass: {capturedWeightData?.batch?.carcassType}
+              </Text>
+              <View
+                style={{
+                  borderBottomWidth: 1,
+                  borderColor: "#2a2a4a",
+                  marginVertical: 12,
+                }}
+              />
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { color: "#FFA500", textAlign: "center" },
+                ]}
+              >
+                What would you like to do next?
+              </Text>
+
+              <TouchableOpacity
+                style={[
+                  styles.saveButton,
+                  {
+                    backgroundColor: "#4CAF50",
+                    marginTop: 15,
+                    paddingVertical: 14,
+                  },
+                ]}
+                onPress={() => handleDecision("packing")}
+              >
+                <Text style={[styles.saveButtonText, { fontSize: 16 }]}>
+                  📦 Go to Meat Packing
+                </Text>
+                <Text style={{ color: "#fff", fontSize: 12, marginTop: 2 }}>
+                  Pack as steaks, ribs, liver, etc.
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.saveButton,
+                  {
+                    backgroundColor: "#FF6F00",
+                    marginTop: 10,
+                    paddingVertical: 14,
+                  },
+                ]}
+                onPress={() => handleDecision("processing")}
+              >
+                <Text style={[styles.saveButtonText, { fontSize: 16 }]}>
+                  🌭 Go to Sausage Processing
+                </Text>
+                <Text style={{ color: "#fff", fontSize: 12, marginTop: 2 }}>
+                  Process into sausages with recipes
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      </ScrollView>
+    </>
   );
 };
 
@@ -3958,6 +4976,14 @@ const WeightAfterScreen = ({ onClose }) => {
   const [isWeighing, setIsWeighing] = useState(false);
   const [currentWeight, setCurrentWeight] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [removalModalVisible, setRemovalModalVisible] = useState(false);
+  const [selectedRemovalItem, setSelectedRemovalItem] = useState(null);
+  const [removeWeight, setRemoveWeight] = useState("");
+  const [removalReason, setRemovalReason] = useState("");
+
+  const [debonningCompleteModalVisible, setDebonningCompleteModalVisible] =
+    useState(false);
+  const [debonnedRecord, setDebonnedRecord] = useState(null);
 
   useEffect(() => {
     loadPendingBatches();
@@ -4108,10 +5134,13 @@ const WeightAfterScreen = ({ onClose }) => {
           totalWeight: currentWeight,
           spoilageRemoved: selectedBatch.spoilageRemoved || 0,
           status: "Awaiting Packing",
+          carcassType: selectedBatch.carcassType,
         };
         coldStockList.unshift(debonnedRecord);
         await AsyncStorage.setItem(coldStockKey, JSON.stringify(coldStockList));
-        syncToFirebase("debonnedRecords", debonnedRecord, businessId);
+        for (const item of coldStockList) {
+          await syncToFirebase("cold_room_stock", item, businessId);
+        }
 
         const debonnedRecords =
           await AsyncStorage.getItem(DEBONNED_RECORDS_KEY);
@@ -4134,15 +5163,156 @@ const WeightAfterScreen = ({ onClose }) => {
         setCurrentWeight(null);
         loadPendingBatches();
 
-        Alert.alert(
-          "Debonning Complete",
-          `${selectedBatch.carcassType} has been deboned.\nWeight after: ${currentWeight.toFixed(3)} kg\nVariance: ${variance > 0 ? "+" : ""}${variance.toFixed(3)} kg (${variancePercent}%)\n\nThe meat is now available in the Packing module under "Meat Waiting to be Packed".`,
-          [{ text: "OK", onPress: () => {} }],
-        );
+        setDebonnedRecord(debonnedRecord);
+        setDebonningCompleteModalVisible(true);
       }
     } catch (error) {
       console.error("Failed to save weight after", error);
       ToastAndroid.show("Error saving weight", ToastAndroid.SHORT);
+    }
+  };
+
+  const handleRemoveAfter = (item) => {
+    setSelectedRemovalItem(item);
+    setRemoveWeight("");
+    setRemovalReason("");
+    setRemovalModalVisible(true);
+  };
+
+  const confirmRemovalAfter = async () => {
+    const weightToRemove = parseFloat(removeWeight);
+    if (isNaN(weightToRemove) || weightToRemove <= 0) {
+      ToastAndroid.show("Please enter a valid weight (kg)", ToastAndroid.SHORT);
+      return;
+    }
+    if (weightToRemove > selectedRemovalItem.weightBefore) {
+      ToastAndroid.show("Not enough stock", ToastAndroid.SHORT);
+      return;
+    }
+    const reason = removalReason.trim();
+    if (reason === "") {
+      ToastAndroid.show(
+        "Please enter a reason for removal",
+        ToastAndroid.SHORT,
+      );
+      return;
+    }
+
+    try {
+      const coldStockKey = getStockKeyForStore("cold");
+      const coldStock = await AsyncStorage.getItem(coldStockKey);
+      let coldStockList = coldStock ? JSON.parse(coldStock) : [];
+
+      let idx = coldStockList.findIndex(
+        (item) =>
+          item.batchCode === selectedRemovalItem.batchCode &&
+          item.isDebonned === true,
+      );
+
+      if (idx === -1) {
+        idx = coldStockList.findIndex(
+          (item) =>
+            item.batchCode === selectedRemovalItem.batchCode &&
+            !item.isDebonned,
+        );
+      }
+
+      if (idx !== -1) {
+        const newWeight = coldStockList[idx].totalWeight - weightToRemove;
+        coldStockList[idx].totalWeight = newWeight;
+        coldStockList[idx].currentWeight = newWeight;
+        coldStockList[idx].lastUpdated = new Date().toISOString();
+        coldStockList[idx].removalReason = reason;
+        if (newWeight <= 0) {
+          coldStockList.splice(idx, 1);
+        }
+        await AsyncStorage.setItem(coldStockKey, JSON.stringify(coldStockList));
+
+        const businessId = store.getState().settings.BusinessId;
+        for (const item of coldStockList) {
+          await syncToFirebase("cold_room_stock", item, businessId);
+        }
+
+        const spoilageRecord = {
+          id: Date.now().toString(),
+          batchCode: selectedRemovalItem.batchCode,
+          carcassType: selectedRemovalItem.carcassType,
+          receivedWeight:
+            selectedRemovalItem.originalReceivedWeight ||
+            selectedRemovalItem.weightBefore,
+          currentWeight: newWeight,
+          weightBeforeDebonning: selectedRemovalItem.weightBefore,
+          weightRemoved: weightToRemove,
+          reason: reason,
+          date: new Date().toLocaleString(),
+          removedFrom: "Weight After Debonning",
+        };
+
+        const spoilageStored = await AsyncStorage.getItem(
+          SPOILAGE_REMOVALS_KEY,
+        );
+        let spoilageList = spoilageStored ? JSON.parse(spoilageStored) : [];
+        spoilageList.unshift(spoilageRecord);
+        await AsyncStorage.setItem(
+          SPOILAGE_REMOVALS_KEY,
+          JSON.stringify(spoilageList),
+        );
+        syncToFirebase("spoilageRecords", spoilageRecord, businessId);
+
+        const removalRecord = {
+          id: Date.now().toString(),
+          store: "cold",
+          itemId: selectedRemovalItem.id,
+          type: selectedRemovalItem.carcassType,
+          weightRemoved: weightToRemove,
+          batchCode: selectedRemovalItem.batchCode || "",
+          reason: reason,
+          date: new Date().toLocaleString(),
+          isCarcass: true,
+          isColdroom: true,
+          isDebonned: true,
+          remainingWeight: newWeight,
+          removedFrom: "Weight After Debonning",
+          weightBeforeDebonning: selectedRemovalItem.weightBefore,
+        };
+
+        let removalsList = await AsyncStorage.getItem(REMOVALS_KEY);
+        removalsList = removalsList ? JSON.parse(removalsList) : [];
+        removalsList.unshift(removalRecord);
+        await AsyncStorage.setItem(REMOVALS_KEY, JSON.stringify(removalsList));
+        syncToFirebase("stockRemovals", removalRecord, businessId);
+
+        ToastAndroid.show(
+          `Removed ${weightToRemove.toFixed(3)} kg from ${selectedRemovalItem.carcassType}`,
+          ToastAndroid.LONG,
+        );
+
+        setRemovalModalVisible(false);
+        setSelectedRemovalItem(null);
+        setRemoveWeight("");
+        setRemovalReason("");
+        onRefresh();
+      }
+    } catch (error) {
+      console.error("Failed to remove stock:", error);
+      ToastAndroid.show("Error removing stock", ToastAndroid.SHORT);
+    }
+  };
+
+  const navigateAfterDebonning = (destination) => {
+    setDebonningCompleteModalVisible(false);
+    if (destination === "meat_packing") {
+      Alert.alert(
+        "Meat Packing",
+        "The debonned meat is now available in the Packing module under 'Meat' tab.",
+        [{ text: "OK", onPress: () => {} }],
+      );
+    } else if (destination === "sausage_processing") {
+      Alert.alert(
+        "Sausage Processing",
+        "The debonned meat is now available for sausage processing in the Processing module.",
+        [{ text: "OK", onPress: () => {} }],
+      );
     }
   };
 
@@ -4159,13 +5329,6 @@ const WeightAfterScreen = ({ onClose }) => {
           kg
         </Text>
         <Text style={styles.stockInfo}>
-          Current Stock Weight:{" "}
-          {item.currentStockWeight
-            ? item.currentStockWeight.toFixed(3)
-            : "0.000"}{" "}
-          kg
-        </Text>
-        <Text style={styles.stockInfo}>
           Weight Before Debonning: {item.weightBefore.toFixed(3)} kg
         </Text>
         {item.spoilageRemoved > 0 && (
@@ -4175,12 +5338,23 @@ const WeightAfterScreen = ({ onClose }) => {
         )}
         <Text style={styles.stockDate}>Date: {item.dateBefore}</Text>
       </View>
-      <TouchableOpacity
-        style={[styles.removeButton, { backgroundColor: "#FFA500" }]}
-        onPress={() => startWeighingAfter(item)}
-      >
-        <Text style={styles.removeButtonText}>Weigh After Debonning</Text>
-      </TouchableOpacity>
+      <View style={{ flexDirection: "column", gap: 5 }}>
+        <TouchableOpacity
+          style={[
+            styles.removeButton,
+            { backgroundColor: "#FFA500", marginBottom: 5 },
+          ]}
+          onPress={() => startWeighingAfter(item)}
+        >
+          <Text style={styles.removeButtonText}>Weigh After</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.removeButton, { backgroundColor: "#FF4444" }]}
+          onPress={() => handleRemoveAfter(item)}
+        >
+          <Text style={styles.removeButtonText}>Remove</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
@@ -4221,6 +5395,12 @@ const WeightAfterScreen = ({ onClose }) => {
           )}
           <Text style={styles.stockDate}>Timestamp: {item.dateAfter}</Text>
         </View>
+        <TouchableOpacity
+          style={[styles.removeButton, { backgroundColor: "#FF4444" }]}
+          onPress={() => handleRemoveAfter(item)}
+        >
+          <Text style={styles.removeButtonText}>Remove</Text>
+        </TouchableOpacity>
       </View>
     );
   };
@@ -4299,59 +5479,240 @@ const WeightAfterScreen = ({ onClose }) => {
   }
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: "#F9F9F9" }}
-      refreshControl={
-        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-      }
-    >
-      <View style={styles.dryGoodsContainer}>
-        <TouchableOpacity style={styles.backButton} onPress={onClose}>
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={styles.dryGoodsTitle}>Weight After Debonning</Text>
-        <TouchableOpacity style={styles.refreshButtonSmall} onPress={onRefresh}>
-          <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
-        </TouchableOpacity>
-        <Text style={styles.recordsHeader}>
-          Pending Batches ({pendingBatches.length})
-        </Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by last 3 digits of batch no..."
-          value={pendingSearchText}
-          onChangeText={setPendingSearchText}
-        />
-        <FlatList
-          data={filteredPending}
-          keyExtractor={(item) => item.id}
-          renderItem={renderPendingBatch}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No pending batches</Text>
-          }
-          scrollEnabled={false}
-        />
-        <Text style={styles.recordsHeader}>
-          Completed Batches ({completedBatches.length})
-        </Text>
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search by last 3 digits of batch no..."
-          value={completedSearchText}
-          onChangeText={setCompletedSearchText}
-        />
-        <FlatList
-          data={filteredCompleted}
-          keyExtractor={(item) => item.id}
-          renderItem={renderCompletedBatch}
-          ListEmptyComponent={
-            <Text style={styles.emptyText}>No completed batches</Text>
-          }
-          scrollEnabled={false}
-        />
-        <View style={{ height: responsiveSize(20) }} />
-      </View>
-    </ScrollView>
+    <>
+      <ScrollView
+        style={{ flex: 1, backgroundColor: "#F9F9F9" }}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        <View style={styles.dryGoodsContainer}>
+          <TouchableOpacity style={styles.backButton} onPress={onClose}>
+            <Text style={styles.backButtonText}>← Back</Text>
+          </TouchableOpacity>
+          <Text style={styles.dryGoodsTitle}>Weight After Debonning</Text>
+          <TouchableOpacity
+            style={styles.refreshButtonSmall}
+            onPress={onRefresh}
+          >
+            <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
+          </TouchableOpacity>
+          <Text style={styles.recordsHeader}>
+            Pending Batches ({pendingBatches.length})
+          </Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by last 3 digits of batch no..."
+            value={pendingSearchText}
+            onChangeText={setPendingSearchText}
+          />
+          <FlatList
+            data={filteredPending}
+            keyExtractor={(item) => item.id}
+            renderItem={renderPendingBatch}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No pending batches</Text>
+            }
+            scrollEnabled={false}
+          />
+          <Text style={styles.recordsHeader}>
+            Completed Batches ({completedBatches.length})
+          </Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by last 3 digits of batch no..."
+            value={completedSearchText}
+            onChangeText={setCompletedSearchText}
+          />
+          <FlatList
+            data={filteredCompleted}
+            keyExtractor={(item) => item.id}
+            renderItem={renderCompletedBatch}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No completed batches</Text>
+            }
+            scrollEnabled={false}
+          />
+          <View style={{ height: responsiveSize(20) }} />
+        </View>
+
+        <Modal
+          animationType="slide"
+          transparent
+          visible={removalModalVisible}
+          onRequestClose={() => setRemovalModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={styles.modalTitle}>
+                Remove Stock (After Debonning)
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Item: {selectedRemovalItem?.carcassType}
+              </Text>
+              {selectedRemovalItem?.batchCode && (
+                <Text style={styles.modalSubtitle}>
+                  Batch: {selectedRemovalItem.batchCode}
+                </Text>
+              )}
+              <Text style={styles.modalSubtitle}>
+                Received Weight:{" "}
+                {selectedRemovalItem?.originalReceivedWeight?.toFixed(3) ||
+                  "0.000"}{" "}
+                kg
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Weight Before Debonning:{" "}
+                {selectedRemovalItem?.weightBefore?.toFixed(3) || "0.000"} kg
+              </Text>
+              <TextInput
+                style={styles.inputField}
+                placeholder="Weight to remove (kg)"
+                value={removeWeight}
+                onChangeText={setRemoveWeight}
+                keyboardType="decimal-pad"
+              />
+              <TextInput
+                style={styles.inputField}
+                placeholder="Reason for removal (required)"
+                value={removalReason}
+                onChangeText={setRemovalReason}
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#FF4444" }]}
+                  onPress={confirmRemovalAfter}
+                >
+                  <Text style={styles.modalButtonText}>Confirm Removal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#888" }]}
+                  onPress={() => setRemovalModalVisible(false)}
+                >
+                  <Text style={styles.modalButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+      </ScrollView>
+
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={debonningCompleteModalVisible}
+        onRequestClose={() => setDebonningCompleteModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View
+            style={[
+              styles.modalContent,
+              { width: "90%", backgroundColor: "#1a1a2e" },
+            ]}
+          >
+            <Text
+              style={[styles.modalTitle, { color: "#4CAF50", fontSize: 22 }]}
+            >
+              ✅ Debonning Complete!
+            </Text>
+            <View
+              style={{
+                borderBottomWidth: 1,
+                borderColor: "#2a2a4a",
+                marginVertical: 12,
+              }}
+            />
+            {debonnedRecord && (
+              <>
+                <Text style={[styles.modalSubtitle, { color: "#fff" }]}>
+                  🥩 {debonnedRecord.carcassType || debonnedRecord.type}
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: "#aaa" }]}>
+                  Batch: {debonnedRecord.batchCode}
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: "#aaa" }]}>
+                  Weight After:{" "}
+                  {debonnedRecord.weightAfterDebonning?.toFixed(3)} kg
+                </Text>
+                <Text style={[styles.modalSubtitle, { color: "#aaa" }]}>
+                  Variance: {debonnedRecord.variance?.toFixed(3)} kg (
+                  {debonnedRecord.variancePercent}%)
+                </Text>
+              </>
+            )}
+            <View
+              style={{
+                borderBottomWidth: 1,
+                borderColor: "#2a2a4a",
+                marginVertical: 12,
+              }}
+            />
+            <Text
+              style={[
+                styles.modalSubtitle,
+                { color: "#FFA500", textAlign: "center" },
+              ]}
+            >
+              Where would you like to send this meat?
+            </Text>
+
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                {
+                  backgroundColor: "#4CAF50",
+                  marginTop: 15,
+                  paddingVertical: 14,
+                },
+              ]}
+              onPress={() => navigateAfterDebonning("meat_packing")}
+            >
+              <Text style={[styles.saveButtonText, { fontSize: 16 }]}>
+                📦 Go to Meat Packing
+              </Text>
+              <Text style={{ color: "#fff", fontSize: 12, marginTop: 2 }}>
+                Pack as steaks, ribs, liver, etc.
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                {
+                  backgroundColor: "#FF6F00",
+                  marginTop: 10,
+                  paddingVertical: 14,
+                },
+              ]}
+              onPress={() => navigateAfterDebonning("sausage_processing")}
+            >
+              <Text style={[styles.saveButtonText, { fontSize: 16 }]}>
+                🌭 Go to Sausage Processing
+              </Text>
+              <Text style={{ color: "#fff", fontSize: 12, marginTop: 2 }}>
+                Process into sausages with recipes
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.saveButton,
+                {
+                  backgroundColor: "#888",
+                  marginTop: 10,
+                  paddingVertical: 10,
+                },
+              ]}
+              onPress={() => setDebonningCompleteModalVisible(false)}
+            >
+              <Text style={[styles.saveButtonText, { fontSize: 14 }]}>
+                Stay Here
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 };
 
@@ -4360,7 +5721,23 @@ const ButcheryScreen = ({ onClose }) => {
   const [showWeightBefore, setShowWeightBefore] = useState(false);
   const [showWeightAfter, setShowWeightAfter] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
-  const handleBatchCreated = () => setRefreshKey((prev) => prev + 1);
+
+  const handleBatchCreated = (destination) => {
+    setRefreshKey((prev) => prev + 1);
+    if (destination === "packing") {
+      ToastAndroid.show("📦 Opening Packing section...", ToastAndroid.SHORT);
+      setShowWeightBefore(false);
+      if (onClose) {
+        onClose("packing");
+      }
+    } else if (destination === "processing") {
+      ToastAndroid.show("🌭 Opening Processing section...", ToastAndroid.SHORT);
+      setShowWeightBefore(false);
+      if (onClose) {
+        onClose("processing");
+      }
+    }
+  };
 
   if (showWeightBefore)
     return (
@@ -5071,7 +6448,10 @@ const GenericStoreScreen = ({ onClose, storeInfo }) => {
 
 // ============ DRY GOODS SCREEN ============
 const DryGoodsScreen = ({ onClose }) => {
-  const [dryGoodsType, setDryGoodsType] = useState("");
+  const [itemDescription, setItemDescription] = useState("");
+  const [itemCode, setItemCode] = useState("");
+  const [unit, setUnit] = useState("KG");
+  const [bomType, setBomType] = useState("");
   const [capturedRecords, setCapturedRecords] = useState([]);
   const [savedSessions, setSavedSessions] = useState([]);
   const [filteredSessions, setFilteredSessions] = useState([]);
@@ -5079,7 +6459,7 @@ const DryGoodsScreen = ({ onClose }) => {
   const [deletedRecords, setDeletedRecords] = useState([]);
   const [filteredDeleted, setFilteredDeleted] = useState([]);
   const [deletedSearchText, setDeletedSearchText] = useState("");
-  const [selectedStore, setSelectedStore] = useState("dry");
+  const [selectedStore] = useState("dry");
   const [stores, setStores] = useState([]);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState(null);
@@ -5098,6 +6478,9 @@ const DryGoodsScreen = ({ onClose }) => {
   const MIN_PIECE_WEIGHT = 0.05;
   const isFirstCaptureAfterReset = useRef(true);
   const [isManualEditing, setIsManualEditing] = useState(false);
+  const [batchNumber, setBatchNumber] = useState("");
+
+  const unitOptions = ["KG", "GM", "PCS"];
 
   useEffect(() => {
     const loadStores = async () => {
@@ -5106,11 +6489,6 @@ const DryGoodsScreen = ({ onClose }) => {
         if (stored) {
           const parsed = JSON.parse(stored);
           setStores(parsed);
-          if (
-            !parsed.some((s) => s.value === selectedStore) &&
-            parsed.length > 0
-          )
-            setSelectedStore(parsed[0].value);
         } else {
           const defaultStores = [
             { label: "Dry Goods Store", value: "dry" },
@@ -5127,9 +6505,17 @@ const DryGoodsScreen = ({ onClose }) => {
       }
     };
     loadStores();
+    generateBatchNumber();
   }, []);
 
-  const storeOptions = stores.map((s) => ({ label: s.label, value: s.value }));
+  const generateBatchNumber = () => {
+    const today = new Date();
+    const dateStr = today.toISOString().slice(0, 10).replace(/-/g, "");
+    const random = Math.floor(Math.random() * 1000)
+      .toString()
+      .padStart(3, "0");
+    setBatchNumber(`DRY-${dateStr}-${random}`);
+  };
 
   const loadSessions = async () => {
     try {
@@ -5184,11 +6570,12 @@ const DryGoodsScreen = ({ onClose }) => {
       setFilteredSessions(
         savedSessions.filter(
           (item) =>
-            item.type &&
-            item.type
-              .slice(-3)
-              .toLowerCase()
-              .includes(searchText.toLowerCase()),
+            (item.itemCode &&
+              item.itemCode.toLowerCase().includes(searchText.toLowerCase())) ||
+            (item.description &&
+              item.description
+                .toLowerCase()
+                .includes(searchText.toLowerCase())),
         ),
       );
   }, [searchText, savedSessions]);
@@ -5199,11 +6586,14 @@ const DryGoodsScreen = ({ onClose }) => {
       setFilteredDeleted(
         deletedRecords.filter(
           (item) =>
-            item.type &&
-            item.type
-              .slice(-3)
-              .toLowerCase()
-              .includes(deletedSearchText.toLowerCase()),
+            (item.itemCode &&
+              item.itemCode
+                .toLowerCase()
+                .includes(deletedSearchText.toLowerCase())) ||
+            (item.description &&
+              item.description
+                .toLowerCase()
+                .includes(deletedSearchText.toLowerCase())),
         ),
       );
   }, [deletedSearchText, deletedRecords]);
@@ -5249,7 +6639,7 @@ const DryGoodsScreen = ({ onClose }) => {
         isCountingEnabled.current = false;
         setPieceCount((prev) => prev + 1);
         ToastAndroid.show(
-          `✓ Added piece (${weightChange.toFixed(2)} kg)`,
+          `✓ Added item (${weightChange.toFixed(2)} kg)`,
           ToastAndroid.SHORT,
         );
         previousWeight.current = currentWeight;
@@ -5264,7 +6654,7 @@ const DryGoodsScreen = ({ onClose }) => {
         isCountingEnabled.current = false;
         setPieceCount((prev) => prev - 1);
         ToastAndroid.show(
-          `✓ Removed piece (${Math.abs(weightChange).toFixed(2)} kg)`,
+          `✓ Removed item (${Math.abs(weightChange).toFixed(2)} kg)`,
           ToastAndroid.SHORT,
         );
         previousWeight.current = currentWeight;
@@ -5288,7 +6678,7 @@ const DryGoodsScreen = ({ onClose }) => {
       return;
     }
     if (pieceCount === 0) {
-      ToastAndroid.show("No pieces to capture", ToastAndroid.SHORT);
+      ToastAndroid.show("No items to capture", ToastAndroid.SHORT);
       return;
     }
     const currentWeight = parseFloat(scaleData.reading.replace("kg", "")) || 0;
@@ -5300,7 +6690,7 @@ const DryGoodsScreen = ({ onClose }) => {
     };
     setCapturedRecords((prev) => [...prev, newRecord]);
     ToastAndroid.show(
-      `Captured ${pieceCount} pcs, ${currentWeight.toFixed(2)} kg`,
+      `Captured ${pieceCount} items, ${currentWeight.toFixed(2)} kg`,
       ToastAndroid.SHORT,
     );
     setPieceCount(0);
@@ -5318,8 +6708,16 @@ const DryGoodsScreen = ({ onClose }) => {
   };
 
   const handleSave = async () => {
-    if (!dryGoodsType.trim()) {
-      ToastAndroid.show("Please enter kind of dry goods", ToastAndroid.SHORT);
+    if (!itemCode.trim()) {
+      ToastAndroid.show("Please enter Item Code", ToastAndroid.SHORT);
+      return;
+    }
+    if (!itemDescription.trim()) {
+      ToastAndroid.show("Please enter Description", ToastAndroid.SHORT);
+      return;
+    }
+    if (!bomType.trim()) {
+      ToastAndroid.show("Please enter BOM Type", ToastAndroid.SHORT);
       return;
     }
     if (capturedRecords.length === 0) {
@@ -5336,13 +6734,18 @@ const DryGoodsScreen = ({ onClose }) => {
     );
     const newSession = {
       id: Date.now().toString(),
-      type: dryGoodsType.trim(),
+      itemCode: itemCode.trim(),
+      description: itemDescription.trim(),
+      unit: unit,
+      bomType: bomType.trim(),
+      batchNumber: batchNumber,
       captures: capturedRecords,
       date: new Date().toLocaleString(),
       totalCaptures: capturedRecords.length,
       totalPieces: totalPieces,
       totalWeight: totalWeightSum,
       store: selectedStore,
+      type: "Dry Goods",
     };
     const updatedSessions = [newSession, ...savedSessions];
     setSavedSessions(updatedSessions);
@@ -5357,32 +6760,47 @@ const DryGoodsScreen = ({ onClose }) => {
       const stock = await AsyncStorage.getItem(stockKey);
       let stockList = stock ? JSON.parse(stock) : [];
       const existingIndex = stockList.findIndex(
-        (item) => item.type === dryGoodsType.trim(),
+        (item) => item.itemCode === itemCode.trim(),
       );
       if (existingIndex >= 0) {
         stockList[existingIndex].pieces += totalPieces;
         stockList[existingIndex].totalWeight += totalWeightSum;
         stockList[existingIndex].lastUpdated = new Date().toISOString();
+        stockList[existingIndex].batchNumber = batchNumber;
       } else {
         stockList.push({
           id: Date.now().toString(),
-          type: dryGoodsType.trim(),
+          itemCode: itemCode.trim(),
+          description: itemDescription.trim(),
+          unit: unit,
+          bomType: bomType.trim(),
+          batchNumber: batchNumber,
           pieces: totalPieces,
           totalWeight: totalWeightSum,
           lastUpdated: new Date().toISOString(),
+          type: "Dry Goods",
         });
       }
       await AsyncStorage.setItem(stockKey, JSON.stringify(stockList));
-      const storeLabel =
-        stores.find((s) => s.value === selectedStore)?.label || selectedStore;
-      ToastAndroid.show(`Session saved to ${storeLabel}`, ToastAndroid.SHORT);
+      const businessId = store.getState().settings.BusinessId;
+      for (const item of stockList) {
+        await syncToFirebase("dry_goods_stock", item, businessId);
+      }
+      ToastAndroid.show(
+        `Dry Goods saved to Dry Goods Store`,
+        ToastAndroid.SHORT,
+      );
     } catch (error) {
       console.error("Failed to save session", error);
     }
-    setDryGoodsType("");
+    setItemCode("");
+    setItemDescription("");
+    setUnit("KG");
+    setBomType("");
     setCapturedRecords([]);
     setPieceCount(0);
     previousWeight.current = 0;
+    generateBatchNumber();
   };
 
   const requestDeleteSession = (session) => {
@@ -5406,7 +6824,9 @@ const DryGoodsScreen = ({ onClose }) => {
     const deletionRecord = {
       id: Date.now().toString(),
       sessionId: session.id,
-      type: session.type || "",
+      itemCode: session.itemCode || "",
+      description: session.description || "",
+      batchNumber: session.batchNumber || "",
       store: session.store || "",
       totalPieces: session.totalPieces || 0,
       totalWeight: session.totalWeight || 0,
@@ -5435,7 +6855,9 @@ const DryGoodsScreen = ({ onClose }) => {
       const stockKey = getStockKeyForStore(session.store);
       const stockRaw = await AsyncStorage.getItem(stockKey);
       let stockList = stockRaw ? JSON.parse(stockRaw) : [];
-      const index = stockList.findIndex((item) => item.type === session.type);
+      const index = stockList.findIndex(
+        (item) => item.itemCode === session.itemCode,
+      );
       if (index !== -1) {
         const totalPiecesToRemove = session.totalPieces || 0;
         const totalWeightToRemove = session.totalWeight || 0;
@@ -5465,7 +6887,7 @@ const DryGoodsScreen = ({ onClose }) => {
       let stockList = stock ? JSON.parse(stock) : [];
 
       const existingIndex = stockList.findIndex(
-        (item) => item.type === recordToRestore.type,
+        (item) => item.itemCode === recordToRestore.itemCode,
       );
 
       if (existingIndex >= 0) {
@@ -5475,10 +6897,15 @@ const DryGoodsScreen = ({ onClose }) => {
       } else {
         stockList.push({
           id: Date.now().toString(),
-          type: recordToRestore.type,
+          itemCode: recordToRestore.itemCode,
+          description: recordToRestore.description,
+          unit: recordToRestore.unit || "KG",
+          bomType: recordToRestore.bomType || "",
+          batchNumber: recordToRestore.batchNumber || "",
           pieces: recordToRestore.totalPieces,
           totalWeight: recordToRestore.totalWeight,
           lastUpdated: new Date().toISOString(),
+          type: "Dry Goods",
         });
       }
 
@@ -5486,13 +6913,18 @@ const DryGoodsScreen = ({ onClose }) => {
 
       const restoredSession = {
         id: recordToRestore.sessionId,
-        type: recordToRestore.type,
+        itemCode: recordToRestore.itemCode,
+        description: recordToRestore.description,
+        unit: recordToRestore.unit || "KG",
+        bomType: recordToRestore.bomType || "",
+        batchNumber: recordToRestore.batchNumber || "",
         captures: recordToRestore.captures || [],
         date: recordToRestore.originalDate,
         totalCaptures: (recordToRestore.captures || []).length,
         totalPieces: recordToRestore.totalPieces,
         totalWeight: recordToRestore.totalWeight,
         store: recordToRestore.store || "dry",
+        type: "Dry Goods",
       };
 
       const updatedSessions = [restoredSession, ...savedSessions];
@@ -5509,7 +6941,7 @@ const DryGoodsScreen = ({ onClose }) => {
       );
 
       ToastAndroid.show(
-        `Restored ${recordToRestore.type} (${recordToRestore.totalPieces} pieces, ${recordToRestore.totalWeight.toFixed(2)} kg) to stock`,
+        `Restored ${recordToRestore.description} (${recordToRestore.totalPieces} pieces, ${recordToRestore.totalWeight.toFixed(2)} kg) to stock`,
         ToastAndroid.LONG,
       );
 
@@ -5546,7 +6978,13 @@ const DryGoodsScreen = ({ onClose }) => {
     return (
       <View style={styles.sessionItem}>
         <View style={styles.sessionDetails}>
-          <Text style={styles.sessionType}>{item.type}</Text>
+          <Text style={styles.sessionType}>Item: {item.itemCode}</Text>
+          <Text style={styles.sessionInfo}>
+            {item.description} - {item.unit}
+          </Text>
+          <Text style={styles.sessionInfo}>
+            BOM: {item.bomType} | Batch: {item.batchNumber}
+          </Text>
           <Text style={styles.sessionInfo}>
             {item.totalCaptures || captures.length} captures – {item.date}
           </Text>
@@ -5576,10 +7014,15 @@ const DryGoodsScreen = ({ onClose }) => {
     return (
       <View style={[styles.deletedRecordItem, { flexDirection: "column" }]}>
         <View style={styles.deletedRecordDetails}>
-          <Text style={styles.deletedRecordType}>{item.type}</Text>
+          <Text style={styles.deletedRecordType}>
+            Item: {item.itemCode} - {item.description}
+          </Text>
           <Text style={styles.deletedRecordInfo}>
             {item.totalPieces || 0} pieces |{" "}
             {(item.totalWeight || 0).toFixed(2)} kg
+          </Text>
+          <Text style={styles.deletedRecordInfo}>
+            BOM: {item.bomType} | Batch: {item.batchNumber}
           </Text>
           <Text style={styles.deletedRecordInfo}>Store: {storeLabel}</Text>
           <Text style={styles.deletedRecordReason}>Reason: {item.reason}</Text>
@@ -5618,19 +7061,68 @@ const DryGoodsScreen = ({ onClose }) => {
           <Text style={styles.backButtonText}>← Back</Text>
         </TouchableOpacity>
         <View style={styles.formContainer}>
-          <DropdownComponent
-            title="Store"
-            onChange={(item) => setSelectedStore(item.value)}
-            data={storeOptions}
-            value={storeOptions.find((opt) => opt.value === selectedStore)}
-            placeholder="Select Store"
-          />
+          <View style={styles.hardcodedContainer}>
+            <Text style={styles.hardcodedLabel}>Store:</Text>
+            <View style={styles.hardcodedValue}>
+              <Text style={styles.hardcodedText}>Dry Goods Store</Text>
+            </View>
+          </View>
+
+          <View style={styles.hardcodedContainer}>
+            <Text style={styles.hardcodedLabel}>Item Type:</Text>
+            <View style={styles.hardcodedValue}>
+              <Text style={styles.hardcodedText}>Dry Goods</Text>
+            </View>
+          </View>
+
+          <View style={styles.hardcodedContainer}>
+            <Text style={styles.hardcodedLabel}>Batch Number:</Text>
+            <View style={styles.hardcodedValue}>
+              <Text style={styles.hardcodedText}>{batchNumber}</Text>
+            </View>
+          </View>
+
           <TextInput
             style={styles.inputField}
-            placeholder="Kind of Dry Goods"
-            value={dryGoodsType}
-            onChangeText={setDryGoodsType}
+            placeholder="Item Code (e.g., PROC0013)"
+            value={itemCode}
+            onChangeText={setItemCode}
           />
+
+          <TextInput
+            style={styles.inputField}
+            placeholder="Description (e.g., Cooking Oil)"
+            value={itemDescription}
+            onChangeText={setItemDescription}
+          />
+
+          <Text style={styles.label}>Unit:</Text>
+          <View style={styles.unitContainer}>
+            {unitOptions.map((u) => (
+              <TouchableOpacity
+                key={u}
+                style={[styles.unitBtn, unit === u && styles.unitBtnActive]}
+                onPress={() => setUnit(u)}
+              >
+                <Text
+                  style={[
+                    styles.unitBtnText,
+                    unit === u && styles.unitBtnTextActive,
+                  ]}
+                >
+                  {u}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <TextInput
+            style={styles.inputField}
+            placeholder="BOM Type (e.g., A or S)"
+            value={bomType}
+            onChangeText={setBomType}
+          />
+
           <View
             style={[
               styles.display,
@@ -5653,6 +7145,7 @@ const DryGoodsScreen = ({ onClose }) => {
               </Text>
             </View>
           </View>
+
           <View style={styles.summaryRow}>
             <View style={styles.summaryBox}>
               <View
@@ -5702,6 +7195,7 @@ const DryGoodsScreen = ({ onClose }) => {
               <Text style={styles.resetButtonText}>Reset</Text>
             </TouchableOpacity>
           </View>
+
           <TouchableOpacity
             style={[
               styles.captureButton,
@@ -5712,6 +7206,7 @@ const DryGoodsScreen = ({ onClose }) => {
           >
             <Text style={styles.captureButtonText}>Capture</Text>
           </TouchableOpacity>
+
           <Text style={styles.sectionHeader}>
             Captures ({capturedRecords.length})
           </Text>
@@ -5724,13 +7219,15 @@ const DryGoodsScreen = ({ onClose }) => {
             }
             scrollEnabled={false}
           />
+
           <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
             <Text style={styles.saveButtonText}>Save Session</Text>
           </TouchableOpacity>
+
           <Text style={styles.recordsHeader}>Previous Dry Goods Sessions</Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by last 3 digits of dry goods type..."
+            placeholder="Search by Item Code or Description..."
             value={searchText}
             onChangeText={setSearchText}
           />
@@ -5743,12 +7240,13 @@ const DryGoodsScreen = ({ onClose }) => {
             }
             scrollEnabled={false}
           />
+
           <Text style={styles.recordsHeader}>
             Deleted Dry Goods Records ({deletedRecords.length})
           </Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by last 3 digits of dry goods type..."
+            placeholder="Search by Item Code or Description..."
             value={deletedSearchText}
             onChangeText={setDeletedSearchText}
           />
@@ -5761,6 +7259,7 @@ const DryGoodsScreen = ({ onClose }) => {
             }
             scrollEnabled={false}
           />
+
           <View style={{ height: responsiveSize(20) }} />
         </View>
       </View>
@@ -5777,11 +7276,16 @@ const DryGoodsScreen = ({ onClose }) => {
             {sessionToDelete && (
               <>
                 <Text style={styles.modalSubtitle}>
-                  Type: {sessionToDelete.type}
+                  Item: {sessionToDelete.itemCode} -{" "}
+                  {sessionToDelete.description}
                 </Text>
                 <Text style={styles.modalSubtitle}>
                   {sessionToDelete.totalPieces || 0} pieces |{" "}
                   {(sessionToDelete.totalWeight || 0).toFixed(2)} kg
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  BOM: {sessionToDelete.bomType} | Batch:{" "}
+                  {sessionToDelete.batchNumber}
                 </Text>
                 <Text style={styles.modalSubtitle}>
                   Store:{" "}
@@ -5840,11 +7344,16 @@ const DryGoodsScreen = ({ onClose }) => {
             {recordToRestore && (
               <>
                 <Text style={styles.modalSubtitle}>
-                  Type: {recordToRestore.type}
+                  Item: {recordToRestore.itemCode} -{" "}
+                  {recordToRestore.description}
                 </Text>
                 <Text style={styles.modalSubtitle}>
                   {recordToRestore.totalPieces || 0} pieces |{" "}
                   {(recordToRestore.totalWeight || 0).toFixed(2)} kg
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  BOM: {recordToRestore.bomType} | Batch:{" "}
+                  {recordToRestore.batchNumber}
                 </Text>
                 <Text style={styles.modalSubtitle}>
                   Store:{" "}
@@ -5885,7 +7394,7 @@ const DryGoodsScreen = ({ onClose }) => {
   );
 };
 
-// ============ STORAGE SCREEN ============
+// ============ STORAGE SCREEN WITH CORRECT DRY GOODS DISPLAY ============
 const StorageScreen = ({ onClose, onStoreCreated }) => {
   const [selectedStore, setSelectedStore] = useState(null);
   const [stock, setStock] = useState([]);
@@ -5897,6 +7406,13 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
   const [debonnedStock, setDebonnedStock] = useState([]);
   const [filteredDebonned, setFilteredDebonned] = useState([]);
   const [debonnedSearchText, setDebonnedSearchText] = useState("");
+  const [weightBeforeDebonningRecords, setWeightBeforeDebonningRecords] =
+    useState([]);
+  const [filteredWeightBefore, setFilteredWeightBefore] = useState([]);
+  const [weightBeforeSearchText, setWeightBeforeSearchText] = useState("");
+  const [usedStockRecords, setUsedStockRecords] = useState([]);
+  const [filteredUsedStock, setFilteredUsedStock] = useState([]);
+  const [usedStockSearchText, setUsedStockSearchText] = useState("");
   const [removalModalVisible, setRemovalModalVisible] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
   const [removeWeight, setRemoveWeight] = useState("");
@@ -5905,6 +7421,12 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
   const [manageStoresVisible, setManageStoresVisible] = useState(false);
   const [newStoreName, setNewStoreName] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [returnModalVisible, setReturnModalVisible] = useState(false);
+  const [selectedReturnItem, setSelectedReturnItem] = useState(null);
+  const [returnReason, setReturnReason] = useState("");
+  const [returnedRecords, setReturnedRecords] = useState([]);
+  const [filteredReturned, setFilteredReturned] = useState([]);
+  const [returnedSearchText, setReturnedSearchText] = useState("");
 
   useEffect(() => {
     const loadStores = async () => {
@@ -5927,7 +7449,21 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
       }
     };
     loadStores();
+    loadReturnedRecords();
   }, []);
+
+  const loadReturnedRecords = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(RETURNED_RECORDS_KEY);
+      if (stored) {
+        const records = JSON.parse(stored);
+        setReturnedRecords(records);
+        setFilteredReturned(records);
+      }
+    } catch (error) {
+      console.error("Failed to load returned records:", error);
+    }
+  };
 
   useEffect(() => {
     if (stores.length > 0) {
@@ -5938,19 +7474,43 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
     }
   }, [stores, onStoreCreated]);
 
+  useEffect(() => {
+    if (returnedSearchText.trim() === "") {
+      setFilteredReturned(returnedRecords);
+    } else {
+      setFilteredReturned(
+        returnedRecords.filter(
+          (record) =>
+            (record.batchCode &&
+              record.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(returnedSearchText.toLowerCase())) ||
+            (record.type &&
+              record.type
+                .toLowerCase()
+                .includes(returnedSearchText.toLowerCase())),
+        ),
+      );
+    }
+  }, [returnedSearchText, returnedRecords]);
+
   const loadStock = async (storeValue) => {
     try {
       const stockKey = getStockKeyForStore(storeValue);
       const stored = await AsyncStorage.getItem(stockKey);
       const allStock = stored ? JSON.parse(stored) : [];
+
       const regularStock = allStock.filter((item) => !item.isDebonned);
       const debonnedItems = allStock.filter((item) => item.isDebonned === true);
+
       const sortedDebonned = debonnedItems.sort(
         (a, b) => new Date(b.timestamp) - new Date(a.timestamp),
       );
       const sortedRegular = regularStock.sort(
         (a, b) => new Date(b.lastUpdated) - new Date(a.lastUpdated),
       );
+
       setStock(sortedRegular);
       setFilteredStock(sortedRegular);
       setDebonnedStock(sortedDebonned);
@@ -5964,17 +7524,79 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
     }
   };
 
+  const loadUsedStockRecords = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(USED_STOCK_KEY);
+      if (stored) {
+        const records = JSON.parse(stored);
+        const dryGoodsUsed = records.filter(
+          (record) => record.dryGoodsUsed && record.dryGoodsUsed.length > 0,
+        );
+        setUsedStockRecords(dryGoodsUsed);
+        setFilteredUsedStock(dryGoodsUsed);
+      } else {
+        setUsedStockRecords([]);
+        setFilteredUsedStock([]);
+      }
+    } catch (error) {
+      console.error("Failed to load used stock records:", error);
+      setUsedStockRecords([]);
+      setFilteredUsedStock([]);
+    }
+  };
+
+  const loadWeightBeforeDebonningRecords = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(WEIGHT_BEFORE_DEBONNING_KEY);
+      if (stored) {
+        const records = JSON.parse(stored);
+        const pendingRecords = records.filter(
+          (record) =>
+            record.status === "pending" || record.status === "weighed",
+        );
+        const sorted = pendingRecords.sort(
+          (a, b) => new Date(b.dateBefore) - new Date(a.dateBefore),
+        );
+        setWeightBeforeDebonningRecords(sorted);
+        setFilteredWeightBefore(sorted);
+      } else {
+        setWeightBeforeDebonningRecords([]);
+        setFilteredWeightBefore([]);
+      }
+    } catch (error) {
+      console.error("Failed to load weight before debonning records:", error);
+      setWeightBeforeDebonningRecords([]);
+      setFilteredWeightBefore([]);
+    }
+  };
+
   useEffect(() => {
     if (stockSearchText.trim() === "") setFilteredStock(stock);
     else
       setFilteredStock(
         stock.filter(
           (item) =>
-            item.batchCode &&
-            item.batchCode
-              .slice(-3)
-              .toLowerCase()
-              .includes(stockSearchText.toLowerCase()),
+            (item.batchCode &&
+              item.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(stockSearchText.toLowerCase())) ||
+            (item.itemCode &&
+              item.itemCode
+                .toLowerCase()
+                .includes(stockSearchText.toLowerCase())) ||
+            (item.description &&
+              item.description
+                .toLowerCase()
+                .includes(stockSearchText.toLowerCase())) ||
+            (item.type &&
+              item.type
+                .toLowerCase()
+                .includes(stockSearchText.toLowerCase())) ||
+            (item.carcassType &&
+              item.carcassType
+                .toLowerCase()
+                .includes(stockSearchText.toLowerCase())),
         ),
       );
   }, [stockSearchText, stock]);
@@ -5985,14 +7607,59 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
       setFilteredDebonned(
         debonnedStock.filter(
           (item) =>
-            item.batchCode &&
-            item.batchCode
-              .slice(-3)
-              .toLowerCase()
-              .includes(debonnedSearchText.toLowerCase()),
+            (item.batchCode &&
+              item.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(debonnedSearchText.toLowerCase())) ||
+            (item.type &&
+              item.type
+                .toLowerCase()
+                .includes(debonnedSearchText.toLowerCase())) ||
+            (item.carcassType &&
+              item.carcassType
+                .toLowerCase()
+                .includes(debonnedSearchText.toLowerCase())),
         ),
       );
   }, [debonnedSearchText, debonnedStock]);
+
+  useEffect(() => {
+    if (weightBeforeSearchText.trim() === "")
+      setFilteredWeightBefore(weightBeforeDebonningRecords);
+    else
+      setFilteredWeightBefore(
+        weightBeforeDebonningRecords.filter(
+          (item) =>
+            (item.batchCode &&
+              item.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(weightBeforeSearchText.toLowerCase())) ||
+            (item.carcassType &&
+              item.carcassType
+                .toLowerCase()
+                .includes(weightBeforeSearchText.toLowerCase())),
+        ),
+      );
+  }, [weightBeforeSearchText, weightBeforeDebonningRecords]);
+
+  useEffect(() => {
+    if (usedStockSearchText.trim() === "")
+      setFilteredUsedStock(usedStockRecords);
+    else
+      setFilteredUsedStock(
+        usedStockRecords.filter(
+          (record) =>
+            record.productName
+              ?.toLowerCase()
+              .includes(usedStockSearchText.toLowerCase()) ||
+            record.batchCode
+              ?.toLowerCase()
+              .includes(usedStockSearchText.toLowerCase()),
+        ),
+      );
+  }, [usedStockSearchText, usedStockRecords]);
 
   useEffect(() => {
     if (removalsSearchText.trim() === "") setFilteredRemovals(removals);
@@ -6030,9 +7697,17 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
     setSelectedStore(storeValue);
     loadStock(storeValue);
     loadRemovals(storeValue);
+    if (storeValue === "cold") {
+      loadWeightBeforeDebonningRecords();
+    } else if (storeValue === "dry") {
+      loadUsedStockRecords();
+    }
     setStockSearchText("");
     setDebonnedSearchText("");
     setRemovalsSearchText("");
+    setWeightBeforeSearchText("");
+    setUsedStockSearchText("");
+    setReturnedSearchText("");
   };
 
   const onRefresh = async () => {
@@ -6041,6 +7716,11 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
       await Promise.all([
         loadStock(selectedStore),
         loadRemovals(selectedStore),
+        selectedStore === "cold"
+          ? loadWeightBeforeDebonningRecords()
+          : Promise.resolve(),
+        selectedStore === "dry" ? loadUsedStockRecords() : Promise.resolve(),
+        loadReturnedRecords(),
       ]);
       setRefreshing(false);
     }
@@ -6109,10 +7789,7 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
         );
         return;
       }
-      if (
-        weightToRemove >
-        (selectedItem.currentWeight || selectedItem.totalWeight)
-      ) {
+      if (weightToRemove > selectedItem.totalWeight) {
         ToastAndroid.show("Not enough stock", ToastAndroid.SHORT);
         return;
       }
@@ -6124,8 +7801,7 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
         );
         return;
       }
-      const oldTotalWeight =
-        selectedItem.currentWeight || selectedItem.totalWeight;
+      const oldTotalWeight = selectedItem.totalWeight;
       const newTotalWeight = oldTotalWeight - weightToRemove;
       const isDebonned = selectedItem.isDebonned === true;
       let updatedStock = [...stock];
@@ -6137,7 +7813,6 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
           (i) => i.id === selectedItem.id,
         );
         if (index !== -1) {
-          updatedDebonnedStock[index].currentWeight = newTotalWeight;
           updatedDebonnedStock[index].totalWeight = newTotalWeight;
           updatedDebonnedStock[index].lastUpdated = new Date().toISOString();
           updatedDebonnedStock[index].removalReason = reason;
@@ -6159,7 +7834,7 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
           const spoilageRecord = {
             id: Date.now().toString(),
             batchCode: selectedItem.batchCode,
-            carcassType: selectedItem.type,
+            carcassType: selectedItem.type || selectedItem.carcassType,
             receivedWeight:
               selectedItem.originalReceivedWeight ||
               selectedItem.totalWeight + weightToRemove,
@@ -6189,7 +7864,7 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
         id: Date.now().toString(),
         store: selectedStore,
         itemId: selectedItem.id,
-        type: selectedItem.type,
+        type: selectedItem.type || selectedItem.carcassType,
         weightRemoved: weightToRemove,
         batchCode: selectedItem.batchCode || "",
         reason: reason,
@@ -6208,9 +7883,15 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
         removalRecord,
         store.getState().settings.BusinessId,
       );
+      const businessId = store.getState().settings.BusinessId;
+      const collectionName =
+        selectedStore === "cold" ? "cold_room_stock" : "dry_goods_stock";
+      for (const item of allStock) {
+        await syncToFirebase(collectionName, item, businessId);
+      }
       loadRemovals(selectedStore);
       ToastAndroid.show(
-        `Removed ${weightToRemove.toFixed(3)} kg from ${selectedItem.type}. Remaining: ${newTotalWeight.toFixed(3)} kg`,
+        `Removed ${weightToRemove.toFixed(3)} kg from ${selectedItem.type || selectedItem.carcassType}. Remaining: ${newTotalWeight.toFixed(3)} kg`,
         ToastAndroid.LONG,
       );
       setRemovalModalVisible(false);
@@ -6268,6 +7949,12 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
           removalRecord,
           store.getState().settings.BusinessId,
         );
+        const businessId = store.getState().settings.BusinessId;
+        const collectionName =
+          selectedStore === "cold" ? "cold_room_stock" : "dry_goods_stock";
+        for (const item of updatedStock) {
+          await syncToFirebase(collectionName, item, businessId);
+        }
         loadRemovals(selectedStore);
         ToastAndroid.show(
           `Removed ${weightToRemove.toFixed(3)} kg`,
@@ -6281,10 +7968,137 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
     }
   };
 
+  const handleReturn = (item) => {
+    setSelectedReturnItem(item);
+    setReturnReason("");
+    setReturnModalVisible(true);
+  };
+
+  const confirmReturn = async () => {
+    if (!selectedReturnItem) return;
+
+    const reason = returnReason.trim();
+    if (reason === "") {
+      ToastAndroid.show(
+        "Please enter a reason for returning",
+        ToastAndroid.SHORT,
+      );
+      return;
+    }
+
+    try {
+      const stockKey = getStockKeyForStore(selectedStore);
+      const stock = await AsyncStorage.getItem(stockKey);
+      let stockList = stock ? JSON.parse(stock) : [];
+
+      // Find the item in the removals list by matching id
+      const removalIndex = removals.findIndex(
+        (r) => r.id === selectedReturnItem.id,
+      );
+      if (removalIndex === -1) {
+        ToastAndroid.show("Item not found in removals", ToastAndroid.SHORT);
+        return;
+      }
+
+      const removal = removals[removalIndex];
+
+      // Check if item already exists in stock by matching batchCode and type
+      const existingIndex = stockList.findIndex(
+        (item) =>
+          item.batchCode &&
+          item.batchCode === removal.batchCode &&
+          item.type === removal.type &&
+          !item.isDebonned,
+      );
+
+      if (existingIndex !== -1) {
+        // Update existing stock
+        stockList[existingIndex].totalWeight =
+          (stockList[existingIndex].totalWeight || 0) + removal.weightRemoved;
+        stockList[existingIndex].currentWeight =
+          (stockList[existingIndex].currentWeight || 0) + removal.weightRemoved;
+        stockList[existingIndex].lastUpdated = new Date().toISOString();
+        stockList[existingIndex].status = "Returned";
+        stockList[existingIndex].returnReason = reason;
+        stockList[existingIndex].returnedAt = new Date().toISOString();
+      } else {
+        // Create new stock entry
+        const newItem = {
+          id: Date.now().toString(),
+          type: removal.type || selectedReturnItem.type,
+          batchCode: removal.batchCode || selectedReturnItem.batchCode,
+          totalWeight: removal.weightRemoved,
+          currentWeight: removal.weightRemoved,
+          lastUpdated: new Date().toISOString(),
+          status: "Returned",
+          returnReason: reason,
+          returnedAt: new Date().toISOString(),
+          isDebonned: removal.isDebonned || false,
+          originalReceivedWeight: removal.weightRemoved,
+          pieces: selectedReturnItem.pieces || 1,
+          carcassType: removal.type || selectedReturnItem.type,
+          itemCode: selectedReturnItem.itemCode || "",
+          description: selectedReturnItem.description || "",
+          unit: selectedReturnItem.unit || "KG",
+          bomType: selectedReturnItem.bomType || "",
+          batchNumber: selectedReturnItem.batchNumber || "",
+        };
+        stockList.push(newItem);
+      }
+
+      await AsyncStorage.setItem(stockKey, JSON.stringify(stockList));
+
+      // Remove from removals
+      const updatedRemovals = removals.filter(
+        (_, index) => index !== removalIndex,
+      );
+      setRemovals(updatedRemovals);
+      setFilteredRemovals(updatedRemovals);
+      await AsyncStorage.setItem(REMOVALS_KEY, JSON.stringify(updatedRemovals));
+
+      // Record the return
+      const returnRecord = {
+        id: Date.now().toString(),
+        batchCode: removal.batchCode || selectedReturnItem.batchCode,
+        type: removal.type || selectedReturnItem.type,
+        weightReturned: removal.weightRemoved,
+        reason: reason,
+        date: new Date().toLocaleString(),
+        store: selectedStore,
+        isDebonned: removal.isDebonned || false,
+        returnedFrom: "Deleted Records",
+      };
+
+      const returnedStored = await AsyncStorage.getItem(RETURNED_RECORDS_KEY);
+      let returnedList = returnedStored ? JSON.parse(returnedStored) : [];
+      returnedList.unshift(returnRecord);
+      await AsyncStorage.setItem(
+        RETURNED_RECORDS_KEY,
+        JSON.stringify(returnedList),
+      );
+      setReturnedRecords(returnedList);
+      setFilteredReturned(returnedList);
+
+      ToastAndroid.show(
+        `✅ Returned ${removal.weightRemoved.toFixed(3)} kg of ${removal.type} to stock`,
+        ToastAndroid.LONG,
+      );
+
+      setReturnModalVisible(false);
+      setSelectedReturnItem(null);
+      setReturnReason("");
+      onRefresh();
+    } catch (error) {
+      console.error("Failed to return stock:", error);
+      ToastAndroid.show("Error returning stock", ToastAndroid.SHORT);
+    }
+  };
+
   if (selectedStore) {
     const storeLabel =
       stores.find((s) => s.value === selectedStore)?.label || selectedStore;
     const isColdroom = selectedStore === "cold";
+    const isDryGoods = selectedStore === "dry";
     return (
       <ScrollView
         style={{ flex: 1, backgroundColor: "#F9F9F9" }}
@@ -6306,47 +8120,89 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
           >
             <Text style={styles.refreshButtonSmallText}>↻ Refresh</Text>
           </TouchableOpacity>
+
+          {/* ====== STOCK IN-STORE ====== */}
           <Text style={styles.sectionHeader}>
-            {isColdroom
-              ? "First Weight Carcasses In-Stock"
-              : `Weight of ${storeLabel} in-stock`}
+            {isDryGoods
+              ? "📦 Dry Goods In-Stock"
+              : isColdroom
+                ? "🐄 First Weight Carcasses In-Stock"
+                : `📦 ${storeLabel} In-Stock`}
           </Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by last 3 digits of batch no..."
+            placeholder="Search by batch, item code, or description..."
             value={stockSearchText}
             onChangeText={setStockSearchText}
           />
           <FlatList
             data={filteredStock}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id + index.toString()}
             renderItem={({ item }) => (
               <View style={styles.stockItem}>
                 <View style={styles.stockDetails}>
-                  <Text style={styles.stockType}>{item.type}</Text>
+                  <Text style={styles.stockType}>
+                    {item.carcassType ||
+                      item.type ||
+                      item.itemCode ||
+                      item.description ||
+                      "Unknown"}
+                  </Text>
+                  {item.description && !item.carcassType && (
+                    <Text style={styles.stockInfo}>
+                      Description: {item.description}
+                    </Text>
+                  )}
                   {item.batchCode && (
                     <Text style={styles.stockInfo}>
                       Batch No: {item.batchCode}
+                    </Text>
+                  )}
+                  {item.batchNumber && (
+                    <Text style={styles.stockInfo}>
+                      Batch #: {item.batchNumber}
+                    </Text>
+                  )}
+                  <Text style={styles.stockInfo}>
+                    Unit: {item.unit || "KG"}
+                  </Text>
+                  {item.bomType && (
+                    <Text style={styles.stockInfo}>
+                      BOM Type: {item.bomType}
                     </Text>
                   )}
                   <Text style={styles.stockInfo}>
                     Received Weight:{" "}
                     {item.originalReceivedWeight
                       ? item.originalReceivedWeight.toFixed(3)
-                      : item.totalWeight.toFixed(3)}{" "}
+                      : item.totalWeight?.toFixed(3) || "0.000"}{" "}
                     kg
                   </Text>
+
+                  {isColdroom && (
+                    <>
+                      <Text style={styles.stockInfo}>
+                        Weight Before Debonning:{" "}
+                        {item.weightBefore?.toFixed(3) || "0.000"} kg
+                      </Text>
+                      <Text style={styles.stockInfo}>
+                        Weight After Debonning:{" "}
+                        {item.weightAfterDebonning?.toFixed(3) || "0.000"} kg
+                      </Text>
+                    </>
+                  )}
+
                   <Text style={styles.stockInfo}>
-                    Current Weight:{" "}
-                    {item.totalWeight ? item.totalWeight.toFixed(3) : "0.000"}{" "}
-                    kg
+                    Pieces: {item.pieces || 0}
                   </Text>
-                  <Text style={styles.stockInfo}>Pieces: {item.pieces}</Text>
                   <Text style={styles.stockInfo}>
                     Reason for removal: {item.removalReason || "N/A"}
                   </Text>
                   <Text style={styles.stockDate}>
-                    Last updated: {new Date(item.lastUpdated).toLocaleString()}
+                    Last updated:{" "}
+                    {item.lastUpdated
+                      ? new Date(item.lastUpdated).toLocaleString()
+                      : "N/A"}
                   </Text>
                 </View>
                 <TouchableOpacity
@@ -6358,14 +8214,253 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
               </View>
             )}
             ListEmptyComponent={
-              <Text style={styles.emptyText}>No stock available</Text>
+              <Text style={styles.emptyText}>
+                No stock available in {storeLabel}.
+                {selectedStore === "dry"
+                  ? "\nAdd items via 'Dry Goods' screen."
+                  : "\nAdd items via 'Carcasses' screen."}
+              </Text>
             }
             scrollEnabled={false}
           />
+
+          {/* ====== USED DRY GOODS SECTION (Dry Goods Only) ====== */}
+          {isDryGoods && (
+            <>
+              <Text
+                style={[
+                  styles.sectionHeader,
+                  { marginTop: 20, color: "#FF6F00" },
+                ]}
+              >
+                📦 Used Dry Goods (Consumed in Processing)
+              </Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by product or batch..."
+                value={usedStockSearchText}
+                onChangeText={setUsedStockSearchText}
+              />
+              <FlatList
+                data={filteredUsedStock}
+                keyExtractor={(item, index) => item.id + index.toString()}
+                renderItem={({ item }) => (
+                  <View
+                    style={[
+                      styles.stockItem,
+                      {
+                        backgroundColor: "#FFF8E1",
+                        flexDirection: "column",
+                        alignItems: "stretch",
+                      },
+                    ]}
+                  >
+                    <View style={styles.stockDetails}>
+                      <Text style={styles.stockType}>
+                        Product: {item.productName}
+                      </Text>
+                      <Text style={styles.stockInfo}>
+                        Batch: {item.batchCode}
+                      </Text>
+                      <Text style={styles.stockInfo}>
+                        Total Pieces: {item.totalPieces}
+                      </Text>
+                      <Text style={styles.stockInfo}>Date: {item.date}</Text>
+                      {item.dryGoodsUsed && item.dryGoodsUsed.length > 0 && (
+                        <>
+                          <Text
+                            style={[
+                              styles.stockInfo,
+                              {
+                                fontWeight: "bold",
+                                marginTop: 4,
+                                color: "#0066CC",
+                              },
+                            ]}
+                          >
+                            📦 Dry Goods Consumed:
+                          </Text>
+                          {item.dryGoodsUsed.map((d, idx) => (
+                            <Text
+                              key={idx}
+                              style={[
+                                styles.stockInfo,
+                                { marginLeft: 8, fontSize: 12 },
+                              ]}
+                            >
+                              • {d.description || d.itemCode}:
+                              <Text style={{ fontWeight: "bold" }}>
+                                {" "}
+                                {d.amountUsed.toFixed(3)} kg
+                              </Text>{" "}
+                              used
+                              {d.remainingWeight !== undefined && (
+                                <Text
+                                  style={{
+                                    color:
+                                      d.remainingWeight > 0
+                                        ? "#2E7D32"
+                                        : "#C62828",
+                                  }}
+                                >
+                                  {" "}
+                                  (Balance: {d.remainingWeight.toFixed(3)} kg)
+                                </Text>
+                              )}
+                            </Text>
+                          ))}
+                        </>
+                      )}
+                    </View>
+                  </View>
+                )}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>
+                    No dry goods have been used in processing yet.
+                  </Text>
+                }
+                scrollEnabled={false}
+              />
+            </>
+          )}
+
+          {/* ====== WEIGHT BEFORE DEBONNING RECORDS (Coldroom Only) ====== */}
           {isColdroom && (
             <>
-              <Text style={styles.recordsHeader}>
-                After Debonning Weight Records
+              <Text
+                style={[
+                  styles.sectionHeader,
+                  { marginTop: 20, color: "#FF6F00" },
+                ]}
+              >
+                ⚖️ Weight Before Debonning Records
+              </Text>
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search by batch or carcass type..."
+                value={weightBeforeSearchText}
+                onChangeText={setWeightBeforeSearchText}
+              />
+              <FlatList
+                data={filteredWeightBefore}
+                keyExtractor={(item, index) => item.id + index.toString()}
+                renderItem={({ item }) => {
+                  const hasWeight = item.weightBefore && item.weightBefore > 0;
+                  return (
+                    <View
+                      style={[
+                        styles.stockItem,
+                        { backgroundColor: hasWeight ? "#E8F5E9" : "#FFF3E0" },
+                      ]}
+                    >
+                      <View style={styles.stockDetails}>
+                        <Text style={styles.stockType}>
+                          {item.carcassType || "Carcass"}
+                        </Text>
+                        <Text style={styles.stockInfo}>
+                          Batch No: {item.batchCode}
+                        </Text>
+                        <Text style={styles.stockInfo}>
+                          Received Weight:{" "}
+                          {item.originalReceivedWeight?.toFixed(3) || "0.000"}{" "}
+                          kg
+                        </Text>
+                        <Text
+                          style={[
+                            styles.stockInfo,
+                            {
+                              fontWeight: "bold",
+                              color: hasWeight ? "#2E7D32" : "#FF6F00",
+                            },
+                          ]}
+                        >
+                          Weight Before Debonning:{" "}
+                          {item.weightBefore?.toFixed(3) || "0.000"} kg
+                          {!hasWeight && " ⏳ Awaiting weighing"}
+                          {hasWeight && " ✅ Captured"}
+                        </Text>
+                        {item.spoilageRemoved > 0 && (
+                          <Text
+                            style={[styles.stockInfo, { color: "#FF4444" }]}
+                          >
+                            Spoilage Removed: {item.spoilageRemoved.toFixed(3)}{" "}
+                            kg
+                          </Text>
+                        )}
+                        <Text style={styles.stockInfo}>
+                          Pieces: {item.pieces || 1}
+                        </Text>
+                        <Text style={styles.stockInfo}>
+                          Status:{" "}
+                          {item.status === "pending"
+                            ? "⏳ Pending"
+                            : item.status === "weighed"
+                              ? "⚖️ Weighed"
+                              : "✅ Completed"}
+                        </Text>
+                        <Text style={styles.stockDate}>
+                          Date: {item.dateBefore || "N/A"}
+                          {item.dateWeighed &&
+                            ` | Weighed: ${item.dateWeighed}`}
+                        </Text>
+                      </View>
+                      {!hasWeight && (
+                        <View
+                          style={[
+                            styles.removeButton,
+                            {
+                              backgroundColor: "#FFA500",
+                              paddingHorizontal: 6,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[styles.removeButtonText, { fontSize: 9 }]}
+                          >
+                            Pending
+                          </Text>
+                        </View>
+                      )}
+                      {hasWeight && (
+                        <View
+                          style={[
+                            styles.removeButton,
+                            {
+                              backgroundColor: "#4CAF50",
+                              paddingHorizontal: 6,
+                            },
+                          ]}
+                        >
+                          <Text
+                            style={[styles.removeButtonText, { fontSize: 9 }]}
+                          >
+                            Done
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  );
+                }}
+                ListEmptyComponent={
+                  <Text style={styles.emptyText}>
+                    No weight before debonning records found
+                  </Text>
+                }
+                scrollEnabled={false}
+              />
+            </>
+          )}
+
+          {/* ====== AFTER DEBONNING WEIGHT RECORDS (Coldroom Only) ====== */}
+          {isColdroom && (
+            <>
+              <Text
+                style={[
+                  styles.sectionHeader,
+                  { marginTop: 20, color: "#4CAF50" },
+                ]}
+              >
+                🥩 After Debonning Weight Records
               </Text>
               <TextInput
                 style={styles.searchInput}
@@ -6375,23 +8470,21 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
               />
               <FlatList
                 data={filteredDebonned}
-                keyExtractor={(item) => item.id}
+                keyExtractor={(item, index) => item.id + index.toString()}
                 renderItem={({ item }) => {
                   const varianceColor =
                     item.variance >= 0 ? "#4CAF50" : "#FF4444";
                   const varianceSign = item.variance >= 0 ? "+" : "";
-                  const currentWeightDisplay =
-                    item.currentWeight ||
-                    item.weightAfterDebonning ||
-                    item.totalWeight;
                   const weightAfterDebonningDisplay =
                     item.weightAfterDebonning || item.totalWeight;
                   return (
                     <View
-                      style={[styles.stockItem, { backgroundColor: "#E8F4FD" }]}
+                      style={[styles.stockItem, { backgroundColor: "#E8F5E9" }]}
                     >
                       <View style={styles.stockDetails}>
-                        <Text style={styles.stockType}>{item.type}</Text>
+                        <Text style={styles.stockType}>
+                          {item.type || item.carcassType || "Unknown"}
+                        </Text>
                         <Text style={styles.stockInfo}>
                           Batch No: {item.batchCode}
                         </Text>
@@ -6411,10 +8504,8 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
                         </Text>
                         <Text style={styles.stockInfo}>
                           Weight After Debonning:{" "}
-                          {weightAfterDebonningDisplay.toFixed(3)} kg
-                        </Text>
-                        <Text style={styles.stockInfo}>
-                          Current Weight: {currentWeightDisplay.toFixed(3)} kg
+                          {weightAfterDebonningDisplay?.toFixed(3) || "0.000"}{" "}
+                          kg
                         </Text>
                         <Text
                           style={[
@@ -6448,7 +8539,11 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
               />
             </>
           )}
-          <Text style={styles.recordsHeader}>Deleted Records</Text>
+
+          {/* ====== DELETED RECORDS ====== */}
+          <Text style={[styles.recordsHeader, { marginTop: 20 }]}>
+            🗑️ Deleted Records
+          </Text>
           <TextInput
             style={styles.searchInput}
             placeholder="Search by last 3 digits of batch no..."
@@ -6457,13 +8552,15 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
           />
           <FlatList
             data={filteredRemovals}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id + index.toString()}
             renderItem={({ item }) => (
               <View
                 style={[styles.deletedRecordItem, { flexDirection: "column" }]}
               >
                 <View style={styles.deletedRecordDetails}>
-                  <Text style={styles.deletedRecordType}>{item.type}</Text>
+                  <Text style={styles.deletedRecordType}>
+                    {item.type || item.carcassType}
+                  </Text>
                   {item.batchCode && item.batchCode !== "" && (
                     <Text style={styles.deletedRecordInfo}>
                       Batch: {item.batchCode}
@@ -6505,6 +8602,19 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
                     {item.date || new Date().toLocaleString()}
                   </Text>
                 </View>
+                <TouchableOpacity
+                  style={[
+                    styles.removeButton,
+                    {
+                      backgroundColor: "#4CAF50",
+                      marginTop: 8,
+                      alignSelf: "flex-start",
+                    },
+                  ]}
+                  onPress={() => handleReturn(item)}
+                >
+                  <Text style={styles.removeButtonText}>Return to Stock</Text>
+                </TouchableOpacity>
               </View>
             )}
             ListEmptyComponent={
@@ -6512,7 +8622,68 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
             }
             scrollEnabled={false}
           />
+
+          {/* ====== RETURNED RECORDS ====== */}
+          <Text
+            style={[styles.recordsHeader, { marginTop: 20, color: "#4CAF50" }]}
+          >
+            🔄 Returned Records
+          </Text>
+          <TextInput
+            style={styles.searchInput}
+            placeholder="Search by batch or type..."
+            value={returnedSearchText}
+            onChangeText={setReturnedSearchText}
+          />
+          <FlatList
+            data={filteredReturned}
+            keyExtractor={(item, index) => item.id + index.toString()}
+            renderItem={({ item }) => (
+              <View
+                style={[
+                  styles.deletedRecordItem,
+                  { backgroundColor: "#E8F5E9", flexDirection: "column" },
+                ]}
+              >
+                <View style={styles.deletedRecordDetails}>
+                  <Text
+                    style={[styles.deletedRecordType, { color: "#2E7D32" }]}
+                  >
+                    {item.type || "Item"}
+                  </Text>
+                  {item.batchCode && (
+                    <Text style={styles.deletedRecordInfo}>
+                      Batch: {item.batchCode}
+                    </Text>
+                  )}
+                  <Text style={styles.deletedRecordInfo}>
+                    Weight Returned:{" "}
+                    {item.weightReturned?.toFixed(3) || "0.000"} kg
+                  </Text>
+                  <Text style={styles.deletedRecordInfo}>
+                    Reason: {item.reason || "N/A"}
+                  </Text>
+                  <Text style={styles.deletedRecordDate}>
+                    Returned: {item.date || new Date().toLocaleString()}
+                  </Text>
+                  {item.returnedFrom && (
+                    <Text
+                      style={[styles.deletedRecordInfo, { color: "#0066CC" }]}
+                    >
+                      Returned from: {item.returnedFrom}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            )}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No returned records found</Text>
+            }
+            scrollEnabled={false}
+          />
         </View>
+
+        {/* Removal Modal */}
         <Modal
           animationType="slide"
           transparent
@@ -6523,7 +8694,12 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
             <View style={styles.modalContent}>
               <Text style={styles.modalTitle}>Remove Stock</Text>
               <Text style={styles.modalSubtitle}>
-                Item: {selectedItem?.type}
+                Item:{" "}
+                {selectedItem?.type ||
+                  selectedItem?.carcassType ||
+                  selectedItem?.itemCode ||
+                  selectedItem?.description ||
+                  "Unknown"}
               </Text>
               {selectedItem?.batchCode && (
                 <Text style={styles.modalSubtitle}>
@@ -6538,6 +8714,19 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
                 )?.toFixed(3) || "0.000"}{" "}
                 kg
               </Text>
+              {isColdroom && (
+                <>
+                  <Text style={styles.modalSubtitle}>
+                    Weight Before Debonning:{" "}
+                    {selectedItem?.weightBefore?.toFixed(3) || "0.000"} kg
+                  </Text>
+                  <Text style={styles.modalSubtitle}>
+                    Weight After Debonning:{" "}
+                    {selectedItem?.weightAfterDebonning?.toFixed(3) || "0.000"}{" "}
+                    kg
+                  </Text>
+                </>
+              )}
               <Text style={styles.modalSubtitle}>
                 Current Weight:{" "}
                 {(
@@ -6573,6 +8762,71 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
                 <TouchableOpacity
                   style={[styles.modalButton, { backgroundColor: "#888" }]}
                   onPress={() => setRemovalModalVisible(false)}
+                >
+                  <Text style={styles.modalButtonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Return Modal */}
+        <Modal
+          animationType="slide"
+          transparent
+          visible={returnModalVisible}
+          onRequestClose={() => setReturnModalVisible(false)}
+        >
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalContent}>
+              <Text style={[styles.modalTitle, { color: "#4CAF50" }]}>
+                Return Stock
+              </Text>
+              <Text style={styles.modalSubtitle}>
+                Item:{" "}
+                {selectedReturnItem?.type ||
+                  selectedReturnItem?.carcassType ||
+                  "Unknown"}
+              </Text>
+              {selectedReturnItem?.batchCode && (
+                <Text style={styles.modalSubtitle}>
+                  Batch: {selectedReturnItem.batchCode}
+                </Text>
+              )}
+              <Text style={styles.modalSubtitle}>
+                Weight to Return:{" "}
+                {selectedReturnItem?.weightRemoved?.toFixed(3) || "0.000"} kg
+              </Text>
+              <Text
+                style={[
+                  styles.modalSubtitle,
+                  { marginTop: 12, color: "#FF6F00" },
+                ]}
+              >
+                Please provide a reason for returning this stock.
+              </Text>
+              <TextInput
+                style={[styles.inputField, { marginTop: 10 }]}
+                placeholder="Reason for return (required)"
+                value={returnReason}
+                onChangeText={setReturnReason}
+                multiline
+                numberOfLines={3}
+              />
+              <View style={styles.modalButtons}>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#4CAF50" }]}
+                  onPress={confirmReturn}
+                >
+                  <Text style={styles.modalButtonText}>Confirm Return</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.modalButton, { backgroundColor: "#888" }]}
+                  onPress={() => {
+                    setReturnModalVisible(false);
+                    setSelectedReturnItem(null);
+                    setReturnReason("");
+                  }}
                 >
                   <Text style={styles.modalButtonText}>Cancel</Text>
                 </TouchableOpacity>
@@ -6666,6 +8920,9 @@ const StorageScreen = ({ onClose, onStoreCreated }) => {
 // ============ CARCASSES SCREEN ============
 const CarcassesScreen = ({ onClose }) => {
   const [carcassType, setCarcassType] = useState("");
+  const [itemCode, setItemCode] = useState("");
+  const [unit, setUnit] = useState("KG");
+  const [bomType, setBomType] = useState("");
   const [capturedRecords, setCapturedRecords] = useState([]);
   const [savedSessions, setSavedSessions] = useState([]);
   const [filteredSessions, setFilteredSessions] = useState([]);
@@ -6673,7 +8930,7 @@ const CarcassesScreen = ({ onClose }) => {
   const [deletedRecords, setDeletedRecords] = useState([]);
   const [filteredDeleted, setFilteredDeleted] = useState([]);
   const [deletedSearchText, setDeletedSearchText] = useState("");
-  const [selectedStore, setSelectedStore] = useState("cold");
+  const [selectedStore] = useState("cold");
   const [stores, setStores] = useState([]);
   const [savedCount, setSavedCount] = useState(0);
   const [batchCode, setBatchCode] = useState("");
@@ -6693,6 +8950,8 @@ const CarcassesScreen = ({ onClose }) => {
   const isFirstCaptureAfterReset = useRef(true);
   const [isManualEditing, setIsManualEditing] = useState(false);
 
+  const unitOptions = ["KG", "GM", "PCS"];
+
   useEffect(() => {
     const initialize = async () => {
       try {
@@ -6700,11 +8959,6 @@ const CarcassesScreen = ({ onClose }) => {
         if (storedStores) {
           const parsed = JSON.parse(storedStores);
           setStores(parsed);
-          if (
-            !parsed.some((s) => s.value === selectedStore) &&
-            parsed.length > 0
-          )
-            setSelectedStore(parsed[0].value);
         } else {
           const defaultStores = [
             { label: "Dry Goods Store", value: "dry" },
@@ -6779,11 +9033,15 @@ const CarcassesScreen = ({ onClose }) => {
       setFilteredSessions(
         savedSessions.filter(
           (item) =>
-            item.batchCode &&
-            item.batchCode
-              .slice(-3)
-              .toLowerCase()
-              .includes(searchText.toLowerCase()),
+            (item.batchCode &&
+              item.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(searchText.toLowerCase())) ||
+            (item.carcassType &&
+              item.carcassType
+                .toLowerCase()
+                .includes(searchText.toLowerCase())),
         ),
       );
   }, [searchText, savedSessions]);
@@ -6794,11 +9052,15 @@ const CarcassesScreen = ({ onClose }) => {
       setFilteredDeleted(
         deletedRecords.filter(
           (item) =>
-            item.batchCode &&
-            item.batchCode
-              .slice(-3)
-              .toLowerCase()
-              .includes(deletedSearchText.toLowerCase()),
+            (item.batchCode &&
+              item.batchCode
+                .slice(-3)
+                .toLowerCase()
+                .includes(deletedSearchText.toLowerCase())) ||
+            (item.carcassType &&
+              item.carcassType
+                .toLowerCase()
+                .includes(deletedSearchText.toLowerCase())),
         ),
       );
   }, [deletedSearchText, deletedRecords]);
@@ -6917,6 +9179,14 @@ const CarcassesScreen = ({ onClose }) => {
       ToastAndroid.show("Please enter carcass type", ToastAndroid.SHORT);
       return;
     }
+    if (!itemCode.trim()) {
+      ToastAndroid.show("Please enter Item Code", ToastAndroid.SHORT);
+      return;
+    }
+    if (!bomType.trim()) {
+      ToastAndroid.show("Please enter BOM Type", ToastAndroid.SHORT);
+      return;
+    }
     if (capturedRecords.length === 0) {
       ToastAndroid.show("No carcasses to save", ToastAndroid.SHORT);
       return;
@@ -6934,10 +9204,14 @@ const CarcassesScreen = ({ onClose }) => {
       batchCode,
       store: selectedStore,
       carcassType: carcassType.trim(),
+      itemCode: itemCode.trim(),
+      unit: unit,
+      bomType: bomType.trim(),
       captures: capturedRecords,
       totalPieces,
       totalWeight: totalWeightSum,
       date: new Date().toLocaleString(),
+      type: "Carcass",
     };
     const updatedSessions = [newSession, ...savedSessions];
     setSavedSessions(updatedSessions);
@@ -6951,24 +9225,63 @@ const CarcassesScreen = ({ onClose }) => {
         newSession,
         store.getState().settings.BusinessId,
       );
+
+      const weightBeforeRecord = {
+        id: Date.now().toString(),
+        originalSessionId: newSession.id,
+        batchCode: batchCode,
+        carcassType: carcassType.trim(),
+        itemCode: itemCode.trim(),
+        unit: unit,
+        bomType: bomType.trim(),
+        pieces: totalPieces,
+        originalReceivedWeight: totalWeightSum,
+        weightBefore: null,
+        weightAfter: null,
+        variance: null,
+        status: "pending",
+        dateBefore: new Date().toLocaleString(),
+        spoilageRemoved: 0,
+      };
+
+      const storedWeightBefore = await AsyncStorage.getItem(
+        WEIGHT_BEFORE_DEBONNING_KEY,
+      );
+      let weightBeforeList = storedWeightBefore
+        ? JSON.parse(storedWeightBefore)
+        : [];
+      weightBeforeList.unshift(weightBeforeRecord);
+      await AsyncStorage.setItem(
+        WEIGHT_BEFORE_DEBONNING_KEY,
+        JSON.stringify(weightBeforeList),
+      );
+
       const stockKey = getStockKeyForStore(selectedStore);
       const stock = await AsyncStorage.getItem(stockKey);
       let stockList = stock ? JSON.parse(stock) : [];
       stockList.push({
         id: Date.now().toString(),
         type: carcassType.trim(),
+        itemCode: itemCode.trim(),
+        unit: unit,
+        bomType: bomType.trim(),
         pieces: totalPieces,
         totalWeight: totalWeightSum,
         batchCode: batchCode,
         lastUpdated: new Date().toISOString(),
         isDebonned: false,
         originalReceivedWeight: totalWeightSum,
+        source: "Carcass",
+        weightBeforeRecordId: weightBeforeRecord.id,
+        carcassType: carcassType.trim(),
       });
       await AsyncStorage.setItem(stockKey, JSON.stringify(stockList));
-      const storeLabel =
-        stores.find((s) => s.value === selectedStore)?.label || selectedStore;
+      const businessId = store.getState().settings.BusinessId;
+      for (const item of stockList) {
+        await syncToFirebase("cold_room_stock", item, businessId);
+      }
       ToastAndroid.show(
-        `Carcass session saved to ${storeLabel}`,
+        `Carcass session saved to Coldroom`,
         ToastAndroid.SHORT,
       );
     } catch (error) {
@@ -6982,6 +9295,9 @@ const CarcassesScreen = ({ onClose }) => {
     );
     setBatchCode(formatBatchCode(newSavedCount + 1));
     setCarcassType("");
+    setItemCode("");
+    setUnit("KG");
+    setBomType("");
     setCapturedRecords([]);
   };
 
@@ -7008,6 +9324,9 @@ const CarcassesScreen = ({ onClose }) => {
       sessionId: session.id,
       batchCode: session.batchCode || "",
       carcassType: session.carcassType || "",
+      itemCode: session.itemCode || "",
+      unit: session.unit || "KG",
+      bomType: session.bomType || "",
       store: session.store || "",
       totalPieces: session.totalPieces || 0,
       totalWeight: session.totalWeight || 0,
@@ -7054,7 +9373,7 @@ const CarcassesScreen = ({ onClose }) => {
     setDeleteReason("");
   };
 
-  const renderCaptureItem = ({ item }) => (
+  const renderCaptureItem = ({ item, index }) => (
     <View style={styles.captureItem}>
       <View style={styles.captureDetails}>
         <Text style={styles.captureText}>
@@ -7079,8 +9398,13 @@ const CarcassesScreen = ({ onClose }) => {
         <View style={styles.sessionDetails}>
           <Text style={styles.sessionType}>{item.carcassType}</Text>
           <Text style={styles.sessionInfo}>
-            Batch: {item.batchCode} | {item.totalPieces} pieces |{" "}
-            {item.totalWeight.toFixed(2)} kg
+            Item Code: {item.itemCode} | Unit: {item.unit}
+          </Text>
+          <Text style={styles.sessionInfo}>
+            BOM: {item.bomType} | Batch: {item.batchCode}
+          </Text>
+          <Text style={styles.sessionInfo}>
+            {item.totalPieces} pieces | {item.totalWeight.toFixed(2)} kg
           </Text>
           <Text style={styles.sessionStore}>Store: {storeLabel}</Text>
           <Text style={styles.sessionInfo}>{item.date}</Text>
@@ -7102,11 +9426,12 @@ const CarcassesScreen = ({ onClose }) => {
       <View style={[styles.deletedRecordItem, { flexDirection: "column" }]}>
         <View style={styles.deletedRecordDetails}>
           <Text style={styles.deletedRecordType}>{item.carcassType}</Text>
-          {item.batchCode ? (
-            <Text style={styles.deletedRecordInfo}>
-              Batch: {item.batchCode}
-            </Text>
-          ) : null}
+          <Text style={styles.deletedRecordInfo}>
+            Item Code: {item.itemCode} | Unit: {item.unit}
+          </Text>
+          <Text style={styles.deletedRecordInfo}>
+            BOM: {item.bomType} | Batch: {item.batchCode}
+          </Text>
           <Text style={styles.deletedRecordInfo}>
             {item.totalPieces} pieces | {(item.totalWeight || 0).toFixed(2)} kg
           </Text>
@@ -7123,8 +9448,6 @@ const CarcassesScreen = ({ onClose }) => {
     );
   };
 
-  const storeOptions = stores.map((s) => ({ label: s.label, value: s.value }));
-
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: "#F9F9F9" }}
@@ -7137,23 +9460,61 @@ const CarcassesScreen = ({ onClose }) => {
           <Text style={styles.backButtonText}>← Back</Text>
         </TouchableOpacity>
         <View style={styles.formContainer}>
-          <DropdownComponent
-            title="Store"
-            onChange={(item) => setSelectedStore(item.value)}
-            data={storeOptions}
-            value={storeOptions.find((opt) => opt.value === selectedStore)}
-            placeholder="Select Store"
-          />
+          <View style={styles.hardcodedContainer}>
+            <Text style={styles.hardcodedLabel}>Store:</Text>
+            <View style={styles.hardcodedValue}>
+              <Text style={styles.hardcodedText}>Coldroom</Text>
+            </View>
+          </View>
+
+          <View style={styles.hardcodedContainer}>
+            <Text style={styles.hardcodedLabel}>Batch Number:</Text>
+            <View style={styles.hardcodedValue}>
+              <Text style={styles.hardcodedText}>{batchCode}</Text>
+            </View>
+          </View>
+
           <TextInput
             style={styles.inputField}
-            placeholder="Carcass Type (e.g., Beef, Lamb)"
+            placeholder="Carcass Type (e.g., Beef, Lamb, Sheep, Goat, Chicken)"
             value={carcassType}
             onChangeText={setCarcassType}
           />
-          <View style={styles.batchCodeContainer}>
-            <Text style={styles.batchCodeLabel}>Batch Code:</Text>
-            <Text style={styles.batchCodeValue}>{batchCode}</Text>
+
+          <TextInput
+            style={styles.inputField}
+            placeholder="Item Code (e.g., WIP0042)"
+            value={itemCode}
+            onChangeText={setItemCode}
+          />
+
+          <Text style={styles.label}>Unit:</Text>
+          <View style={styles.unitContainer}>
+            {unitOptions.map((u) => (
+              <TouchableOpacity
+                key={u}
+                style={[styles.unitBtn, unit === u && styles.unitBtnActive]}
+                onPress={() => setUnit(u)}
+              >
+                <Text
+                  style={[
+                    styles.unitBtnText,
+                    unit === u && styles.unitBtnTextActive,
+                  ]}
+                >
+                  {u}
+                </Text>
+              </TouchableOpacity>
+            ))}
           </View>
+
+          <TextInput
+            style={styles.inputField}
+            placeholder="BOM Type (e.g., A or S)"
+            value={bomType}
+            onChangeText={setBomType}
+          />
+
           <View
             style={[
               styles.display,
@@ -7176,6 +9537,7 @@ const CarcassesScreen = ({ onClose }) => {
               </Text>
             </View>
           </View>
+
           <View style={styles.summaryRow}>
             <View style={styles.summaryBox}>
               <View
@@ -7225,6 +9587,7 @@ const CarcassesScreen = ({ onClose }) => {
               <Text style={styles.resetButtonText}>Reset</Text>
             </TouchableOpacity>
           </View>
+
           <TouchableOpacity
             style={[
               styles.captureButton,
@@ -7235,58 +9598,64 @@ const CarcassesScreen = ({ onClose }) => {
           >
             <Text style={styles.captureButtonText}>Capture</Text>
           </TouchableOpacity>
+
           <Text style={styles.sectionHeader}>
             Captured Batches ({capturedRecords.length})
           </Text>
           <FlatList
             data={capturedRecords}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id + index.toString()}
             renderItem={renderCaptureItem}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No batches captured yet</Text>
             }
             scrollEnabled={false}
           />
+
           <TouchableOpacity style={styles.saveButton} onPress={handleSave}>
             <Text style={styles.saveButtonText}>Save Session</Text>
           </TouchableOpacity>
+
           <Text style={styles.recordsHeader}>Weight One Carcasses Records</Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by last 3 digits of batch no..."
+            placeholder="Search by Batch, Item Code or Type..."
             value={searchText}
             onChangeText={setSearchText}
           />
           <FlatList
             data={filteredSessions}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id + index.toString()}
             renderItem={renderSessionItem}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No sessions yet</Text>
             }
             scrollEnabled={false}
           />
+
           <Text style={styles.recordsHeader}>
             Deleted Carcass Records ({deletedRecords.length})
           </Text>
           <TextInput
             style={styles.searchInput}
-            placeholder="Search by last 3 digits of batch no..."
+            placeholder="Search by Batch, Item Code or Type..."
             value={deletedSearchText}
             onChangeText={setDeletedSearchText}
           />
           <FlatList
             data={filteredDeleted}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item, index) => item.id + index.toString()}
             renderItem={renderDeletedRecord}
             ListEmptyComponent={
               <Text style={styles.emptyText}>No deleted records yet</Text>
             }
             scrollEnabled={false}
           />
+
           <View style={{ height: responsiveSize(20) }} />
         </View>
       </View>
+
       <Modal
         animationType="slide"
         transparent
@@ -7302,7 +9671,13 @@ const CarcassesScreen = ({ onClose }) => {
                   Type: {sessionToDelete.carcassType}
                 </Text>
                 <Text style={styles.modalSubtitle}>
+                  Item Code: {sessionToDelete.itemCode}
+                </Text>
+                <Text style={styles.modalSubtitle}>
                   Batch: {sessionToDelete.batchCode}
+                </Text>
+                <Text style={styles.modalSubtitle}>
+                  BOM: {sessionToDelete.bomType} | Unit: {sessionToDelete.unit}
                 </Text>
                 <Text style={styles.modalSubtitle}>
                   {sessionToDelete.totalPieces} pieces |{" "}
@@ -7355,6 +9730,8 @@ const CarcassesScreen = ({ onClose }) => {
 const HomePage = () => {
   const dispatch = useDispatch();
   const navigation = useNavigation();
+  const user = useSelector((state) => state.settings.user);
+  const isSystemAdmin = user?.role === "system_administrator";
   const [refreshing, setRefreshing] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedDestination, setSelectedDestination] = useState(null);
@@ -7406,11 +9783,6 @@ const HomePage = () => {
       setBatchCode(newCode);
       return newCode;
     }
-  };
-
-  const generateNewBatchCode = async () => {
-    await generateBatchCode();
-    ToastAndroid.show("New batch code generated", ToastAndroid.SHORT);
   };
 
   const loadStores = useCallback(async () => {
@@ -7634,6 +10006,15 @@ const HomePage = () => {
 
   const [showCustomStoreScreen, setShowCustomStoreScreen] = useState(null);
 
+  const handleButcheryClose = (destination) => {
+    setShowButcheryScreen(false);
+    if (destination === "packing") {
+      setShowPackingScreen(true);
+    } else if (destination === "processing") {
+      setShowProcessingScreen(true);
+    }
+  };
+
   if (showDryGoodsScreen)
     return <DryGoodsScreen onClose={() => setShowDryGoodsScreen(false)} />;
   if (showCarcassesScreen)
@@ -7646,7 +10027,7 @@ const HomePage = () => {
       />
     );
   if (showButcheryScreen)
-    return <ButcheryScreen onClose={() => setShowButcheryScreen(false)} />;
+    return <ButcheryScreen onClose={handleButcheryClose} />;
   if (showProcessingScreen)
     return <ProcessingScreen onClose={() => setShowProcessingScreen(false)} />;
   if (showPackingScreen)
@@ -7688,25 +10069,19 @@ const HomePage = () => {
     >
       <View style={styles.container}>
         <Header refresh={refreshing} handleClick={onRefresh} />
+
         <View style={styles.formContainer}>
-          <View style={styles.batchCodeContainer}>
-            <View style={styles.batchCodeLeft}>
-              <Text style={styles.batchCodeLabel}>Batch Code:</Text>
-              <Text
-                style={styles.batchCodeValue}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {batchCode || "Generating..."}
-              </Text>
-            </View>
+          {isSystemAdmin && (
             <TouchableOpacity
-              onPress={generateNewBatchCode}
-              style={styles.refreshButton}
+              style={styles.adminToggleBtn}
+              onPress={() => navigation.replace("AdminTabLayout")}
             >
-              <Text style={styles.refreshText}>Refresh</Text>
+              <Text style={styles.adminToggleBtnText}>
+                ⚙️ Switch to Admin Panel
+              </Text>
             </TouchableOpacity>
-          </View>
+          )}
+
           <View style={styles.gridContainer}>
             <TouchableOpacity
               style={styles.box}
@@ -7777,18 +10152,12 @@ const HomePage = () => {
             </TouchableOpacity>
           </View>
         </View>
-        <TouchableOpacity
-          onPress={handleNavigate}
-          style={[styles.button, styles.button_Bg, styles.startButton]}
-        >
-          <Text style={styles.buttonText}>Start</Text>
-        </TouchableOpacity>
       </View>
     </ScrollView>
   );
 };
 
-// ============ STYLES ============
+// ============ COMPLETE STYLES ============
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -7802,6 +10171,26 @@ const styles = StyleSheet.create({
     gap: responsiveSize(15),
     width: "100%",
     alignItems: "center",
+  },
+  adminToggleBtn: {
+    backgroundColor: "#e94560",
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+    width: "100%",
+    alignItems: "center",
+    marginBottom: 15,
+    shadowColor: "#e94560",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  adminToggleBtnText: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
+    letterSpacing: 0.5,
   },
   batchCodeContainer: {
     height: responsiveSize(50),
@@ -8296,6 +10685,79 @@ const styles = StyleSheet.create({
   activeTabText: {
     color: "#0066CC",
     fontWeight: "bold",
+  },
+  hardcodedContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1a1a2e",
+    borderRadius: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#2a2a4a",
+    width: "100%",
+  },
+  hardcodedLabel: {
+    color: "#aaa",
+    fontSize: 14,
+    fontFamily: "Poppins-Medium",
+    marginRight: 10,
+  },
+  hardcodedValue: {
+    flex: 1,
+    backgroundColor: "#0a0a1a",
+    borderRadius: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  hardcodedText: {
+    color: "#4CAF50",
+    fontSize: 14,
+    fontFamily: "Poppins-SemiBold",
+  },
+  unitContainer: {
+    flexDirection: "row",
+    marginBottom: 15,
+    gap: 10,
+    width: "100%",
+  },
+  unitBtn: {
+    flex: 1,
+    backgroundColor: "#2a2a4a",
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: "center",
+  },
+  unitBtnActive: {
+    backgroundColor: "#e94560",
+  },
+  unitBtnText: {
+    color: "#aaa",
+    fontSize: 14,
+    fontFamily: "Poppins-Medium",
+  },
+  unitBtnTextActive: {
+    color: "#fff",
+  },
+  label: {
+    color: "#aaa",
+    marginBottom: 6,
+    fontSize: 12,
+    fontFamily: "Poppins-Medium",
+    width: "100%",
+  },
+  sessionInfo: {
+    fontSize: responsiveSize(14),
+    fontFamily: "Poppins-Regular",
+    color: "#666",
+    marginVertical: 4,
+  },
+  sessionType: {
+    fontSize: responsiveSize(18),
+    fontFamily: "Poppins-Bold",
+    color: "#333",
+    marginVertical: 4,
   },
 });
 
