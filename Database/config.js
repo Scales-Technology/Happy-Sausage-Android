@@ -3,13 +3,14 @@ import { getAnalytics } from "firebase/analytics";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyB5xP5p6oa4KPgy5SU0Ryd7AztQ2LVidVE",
-  authDomain: "warehousesystem-cf290.firebaseapp.com",
-  projectId: "warehousesystem-cf290",
-  storageBucket: "warehousesystem-cf290.firebasestorage.app",
-  messagingSenderId: "694531549824",
-  appId: "1:694531549824:web:189201eb7cb948a6621465",
-  measurementId: "G-GS1QRY939D"
+  apiKey: "AIzaSyDTFQt3jJc0lp-dOwLF4BaFCJPJOeVgJdo",
+  authDomain: "happysausage-application.firebaseapp.com",
+  databaseURL: "https://happysausage-application-default-rtdb.firebaseio.com",
+  projectId: "happysausage-application",
+  storageBucket: "happysausage-application.firebasestorage.app",
+  messagingSenderId: "429663349448",
+  appId: "1:429663349448:web:00478dcd67d5cd40d113fd",
+  measurementId: "G-6V8GCS71FZ"
 };
 
 // Initialize Firebase
